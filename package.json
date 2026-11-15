@@ -1,0 +1,28 @@
+{
+  "name": "dompetku",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Dompetku - pencatatan keuangan pribadi lewat Telegram dan dashboard PWA",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env --watch src/server.js",
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "seed:demo": "node --env-file-if-exists=.env scripts/seed-demo.js",
+    "icons": "node scripts/build-icons.mjs",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.2.17",
+    "sharp": "^0.33.5"
+  }
+}
