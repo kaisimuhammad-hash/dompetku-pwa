@@ -124,6 +124,8 @@ function helpText() {
     '• <code>kemarin kopi 18.000</code>',
     '',
     '<b>Perintah</b>',
+    '/menu — buka menu tombol',
+    '/start — tautkan chat dan buka menu',
     '/saldo — saldo semua dompet',
     '/laporan — ringkasan bulan ini',
     '/laporan 2026-10 — ringkasan bulan lain',
@@ -132,7 +134,29 @@ function helpText() {
     '/batal — batalkan draft',
     '/help — bantuan ini',
     '',
+    'Tombol menu juga tersedia di kiri kolom chat.',
     'Semua transaksi otomatis muncul di dashboard Dompetku.',
+  ].join('\n');
+}
+
+function mainMenuKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('Saldo dompet', 'menu:saldo'), Markup.button.callback('Laporan', 'menu:laporan')],
+    [Markup.button.callback('Anggaran', 'menu:anggaran'), Markup.button.callback('Kategori', 'menu:kategori')],
+    [Markup.button.callback('Bantuan', 'menu:help')],
+  ]);
+}
+
+function subMenuKeyboard() {
+  return Markup.inlineKeyboard([[Markup.button.callback('Kembali ke menu', 'menu:main')]]);
+}
+
+function menuText() {
+  return [
+    '<b>Menu Dompetku</b>',
+    '',
+    'Pilih yang ingin dilihat, atau langsung kirim catatan seperti',
+    '<code>makan siang 25rb</code>.',
   ].join('\n');
 }
 
@@ -141,15 +165,19 @@ async function welcomeText(chatId) {
   if (!owner) {
     await setSetting('owner_chat_id', String(chatId));
     return [
-      '<b>Berhasil terhubung.</b>',
+      '<b>Berhasil tertaut.</b>',
       '',
       'Chat ini sekarang menjadi admin bot Dompetku.',
-      'Coba kirim: <code>makan siang 25rb</code>',
+      'Buka tombol menu di kiri kolom chat, atau ketik /menu.',
       '',
-      'Ketik /help untuk melihat semua perintah.',
+      'Coba kirim: <code>makan siang 25rb</code>',
     ].join('\n');
   }
-  return ['Bot Dompetku siap dipakai.', '', 'Coba kirim: <code>kopi 18rb</code>', 'Ketik /help untuk bantuan.'].join('\n');
+  return [
+    '<b>Bot Dompetku siap dipakai.</b>',
+    '',
+    'Pilih menu di bawah, atau langsung kirim catatan seperti <code>kopi 18rb</code>.',
+  ].join('\n');
 }
 
 async function summaryText(month) {
@@ -192,6 +220,33 @@ async function budgetText(month) {
   const totalLimit = items.reduce((acc, b) => acc + b.limit, 0);
   const totalSpent = items.reduce((acc, b) => acc + b.spent, 0);
   lines.push(`Total: <b>${formatIDR(totalSpent)}</b> / ${formatIDR(totalLimit)}`);
+  return lines.join('\n');
+}
+
+async function saldoText() {
+  const accounts = await listAccounts();
+  if (accounts.length === 0) {
+    return 'Belum ada dompet. Tambahkan dompet dari dashboard Dompetku.';
+  }
+  const lines = ['<b>Saldo Dompet</b>', ''];
+  let total = 0;
+  for (const a of accounts) {
+    total += a.balance;
+    lines.push(`${esc(a.name)} — <b>${formatIDR(a.balance)}</b>`);
+  }
+  lines.push('', `Total: <b>${formatIDR(total)}</b>`);
+  return lines.join('\n');
+}
+
+async function kategoriText() {
+  const categories = await listCategories();
+  const expense = categories.filter((c) => c.kind === 'expense');
+  const income = categories.filter((c) => c.kind === 'income');
+  const lines = ['<b>Kategori</b>', '', '<b>Pengeluaran</b>'];
+  expense.forEach((c) => lines.push(`• ${esc(c.name)}`));
+  lines.push('', '<b>Pemasukan</b>');
+  income.forEach((c) => lines.push(`• ${esc(c.name)}`));
+  lines.push('', 'Atur kategori dan kata kunci dari dashboard.');
   return lines.join('\n');
 }
 
@@ -250,25 +305,14 @@ export async function startBot(app) {
     if (owner && String(ctx.chat.id) !== String(owner)) {
       return ctx.reply('Bot ini sudah terhubung dengan pemilik lain.');
     }
-    await ctx.replyWithHTML(await welcomeText(ctx.chat.id));
+    await ctx.replyWithHTML(await welcomeText(ctx.chat.id), mainMenuKeyboard());
   });
+
+  bot.command('menu', (ctx) => ctx.replyWithHTML(menuText(), mainMenuKeyboard()));
 
   bot.help((ctx) => ctx.replyWithHTML(helpText()));
 
-  bot.command('saldo', async (ctx) => {
-    const accounts = await listAccounts();
-    if (accounts.length === 0) {
-      return ctx.reply('Belum ada dompet. Tambahkan dompet dari dashboard Dompetku.');
-    }
-    const lines = ['<b>Saldo Dompet</b>', ''];
-    let total = 0;
-    for (const a of accounts) {
-      total += a.balance;
-      lines.push(`${esc(a.name)} — <b>${formatIDR(a.balance)}</b>`);
-    }
-    lines.push('', `Total: <b>${formatIDR(total)}</b>`);
-    await ctx.replyWithHTML(lines.join('\n'));
-  });
+  bot.command('saldo', (ctx) => ctx.replyWithHTML(saldoText()));
 
   bot.command('laporan', async (ctx) => {
     const parts = (ctx.message.text || '').trim().split(/\s+/);
@@ -287,17 +331,7 @@ export async function startBot(app) {
     await ctx.replyWithHTML(await budgetText(month));
   });
 
-  bot.command('kategori', async (ctx) => {
-    const categories = await listCategories();
-    const expense = categories.filter((c) => c.kind === 'expense');
-    const income = categories.filter((c) => c.kind === 'income');
-    const lines = ['<b>Kategori</b>', '', '<b>Pengeluaran</b>'];
-    expense.forEach((c) => lines.push(`• ${esc(c.name)}`));
-    lines.push('', '<b>Pemasukan</b>');
-    income.forEach((c) => lines.push(`• ${esc(c.name)}`));
-    lines.push('', 'Atur kategori dan kata kunci dari dashboard.');
-    await ctx.replyWithHTML(lines.join('\n'));
-  });
+  bot.command('kategori', (ctx) => ctx.replyWithHTML(kategoriText()));
 
   bot.command('batal', async (ctx) => {
     pendingDrafts.delete(String(ctx.chat.id));
@@ -307,6 +341,10 @@ export async function startBot(app) {
   bot.on('text', async (ctx) => {
     const text = (ctx.message.text || '').trim();
     if (!text || text.startsWith('/')) return;
+    if (text.toLowerCase() === 'menu') {
+      await ctx.replyWithHTML(menuText(), mainMenuKeyboard());
+      return;
+    }
     try {
       await sendDraft(ctx, ctx.chat.id, await buildDraftFromText(text));
     } catch (err) {
@@ -333,6 +371,36 @@ export async function startBot(app) {
         await answer('Dihapus');
       } catch {
         await answer('Transaksi sudah tidak ada');
+      }
+      return;
+    }
+
+    if (data.startsWith('menu:')) {
+      const view = data.slice(5);
+      try {
+        if (view === 'saldo') {
+          await ctx.editMessageText(await saldoText(), { parse_mode: 'HTML', ...subMenuKeyboard() });
+        } else if (view === 'laporan') {
+          await ctx.editMessageText(await summaryText(currentMonth()), {
+            parse_mode: 'HTML',
+            ...subMenuKeyboard(),
+          });
+        } else if (view === 'anggaran') {
+          await ctx.editMessageText(await budgetText(currentMonth()), {
+            parse_mode: 'HTML',
+            ...subMenuKeyboard(),
+          });
+        } else if (view === 'kategori') {
+          await ctx.editMessageText(await kategoriText(), { parse_mode: 'HTML', ...subMenuKeyboard() });
+        } else if (view === 'help') {
+          await ctx.editMessageText(helpText(), { parse_mode: 'HTML', ...subMenuKeyboard() });
+        } else {
+          await ctx.editMessageText(menuText(), { parse_mode: 'HTML', ...mainMenuKeyboard() });
+        }
+        await answer();
+      } catch (err) {
+        console.error('[bot] gagal membuka menu:', err.message);
+        await answer('Menu gagal dibuka');
       }
       return;
     }
@@ -497,6 +565,8 @@ export async function startBot(app) {
 
   await bot.telegram
     .setMyCommands([
+      { command: 'start', description: 'Tautkan chat dan buka menu' },
+      { command: 'menu', description: 'Buka menu utama' },
       { command: 'saldo', description: 'Lihat saldo semua dompet' },
       { command: 'laporan', description: 'Ringkasan bulan ini' },
       { command: 'anggaran', description: 'Status anggaran bulan ini' },
@@ -504,6 +574,10 @@ export async function startBot(app) {
       { command: 'batal', description: 'Batalkan draft' },
       { command: 'help', description: 'Bantuan' },
     ])
+    .catch(() => {});
+
+  await bot.telegram
+    .setChatMenuButton({ menuButton: { type: 'commands' } })
     .catch(() => {});
 
   if (config.publicUrl) {

@@ -45,13 +45,14 @@ npm run seed:demo
 1. Buka **@BotFather** di Telegram, kirim `/newbot`, pilih nama dan username.
 2. Salin token yang diberikan ke `TELEGRAM_BOT_TOKEN` di `.env`, lalu restart server.
 3. Buka bot kamu dan kirim `/start`. Chat pertama yang memulai bot otomatis menjadi pemilik; chat lain akan ditolak.
-4. Coba kirim `kopi 25rb`. Bot menampilkan draft, tekan **Simpan**.
+4. Setelah tertaut, tombol **menu** muncul di kiri kolom chat (atau ketik `/menu`). Coba kirim `kopi 25rb`; bot menampilkan draft, tekan **Simpan**.
 
 Perintah bot:
 
 | Perintah | Fungsi |
 | --- | --- |
-| `/start` | Menghubungkan chat dan menampilkan bantuan singkat |
+| `/start` | Menautkan chat dan membuka menu |
+| `/menu` | Membuka menu tombol |
 | `/saldo` | Saldo semua dompet |
 | `/laporan` atau `/laporan 2026-10` | Ringkasan bulan ini atau bulan tertentu |
 | `/anggaran` | Status anggaran bulan ini |

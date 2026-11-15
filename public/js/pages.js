@@ -813,7 +813,7 @@ export async function settingsPage(ctx) {
               <button class="btn ghost small" data-bot-test>Kirim pesan uji</button>
               <button class="btn danger small" data-bot-disconnect>Putuskan</button>
             </div>
-            ${bot.username ? `<p class="hint mt-12">Buka <a class="link-btn" href="https://t.me/${esc(bot.username)}" target="_blank" rel="noopener">t.me/${esc(bot.username)}</a> untuk mencatat dari Telegram.</p>` : ''}`
+            ${bot.username ? `<p class="hint mt-12">Buka <a class="link-btn" href="https://t.me/${esc(bot.username)}" target="_blank" rel="noopener">t.me/${esc(bot.username)}</a> — menu bot ada di kiri kolom chat.</p>` : ''}`
           : `<div class="steps">
               <div class="step"><span class="step-num">1</span><span>Buat bot lewat <strong>@BotFather</strong> di Telegram, kirim <code>/newbot</code>, lalu salin token.</span></div>
               <div class="step"><span class="step-num">2</span><span>Isi token ke variabel <code>TELEGRAM_BOT_TOKEN</code> di pengaturan server, lalu restart.</span></div>
