@@ -13,6 +13,14 @@ const publicUrl = (
 const isProd = process.env.NODE_ENV === 'production';
 const backupIntervalDays = Number(process.env.BACKUP_INTERVAL_DAYS || 7);
 
+const rawWebhookSecret = String(process.env.WEBHOOK_SECRET || 'dompetku_webhook_secret')
+  .trim()
+  .replace(/[^A-Za-z0-9_-]/g, '');
+const webhookSecret =
+  rawWebhookSecret.length >= 1 && rawWebhookSecret.length <= 256
+    ? rawWebhookSecret
+    : 'dompetku_webhook_secret_key';
+
 export const config = {
   port: Number(process.env.PORT || 3000),
   host: (process.env.HOST || process.env.IP || '0.0.0.0').trim(),
@@ -21,7 +29,7 @@ export const config = {
   databaseUrl: (process.env.DATABASE_URL || '').trim(),
   botToken: (process.env.TELEGRAM_BOT_TOKEN || '').trim(),
   publicUrl,
-  webhookSecret: process.env.WEBHOOK_SECRET || 'dompetku-webhook',
+  webhookSecret,
   backupIntervalDays:
     Number.isFinite(backupIntervalDays) && backupIntervalDays > 0 ? backupIntervalDays : 7,
   timezone: process.env.TZ || 'Asia/Jakarta',
