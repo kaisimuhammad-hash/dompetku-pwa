@@ -291,7 +291,7 @@ async function sendDraft(ctx, chatId, draft) {
   await ctx.replyWithHTML(await renderDraft(draft), draftKeyboard(draft));
 }
 
-function buildBot(token) {
+export function buildBot(token) {
   const bot = new Telegraf(token);
   bot.catch((err, ctx) => {
     console.error('[bot] error:', err.message);
