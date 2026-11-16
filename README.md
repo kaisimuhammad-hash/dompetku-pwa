@@ -93,6 +93,8 @@ Bagian ini membuat aplikasi berjalan 24 jam dan bisa dibuka dari HP maupun lapto
 
 ### 3. Deploy di Render
 
+Catatan: sebagian akun Render meminta info pembayaran (kartu) sebelum deploy. Kalau muncul pesan `need_payment_info`, lewati bagian ini dan pakai [Koyeb di bagian 4](#4-deploy-di-koyeb-docker) atau [alwaysdata di bagian 5](#5-alternatif-tanpa-kartu-kredit-alwaysdata).
+
 Cara tercepat memakai blueprint `render.yaml` yang sudah ada di repo:
 
 1. Buka [dashboard.render.com](https://dashboard.render.com), pilih **New → Blueprint**.
@@ -125,7 +127,66 @@ Catatan:
 - Disk Render free bersifat sementara, karena itu database wajib memakai Neon. Data tidak hilang saat redeploy.
 - Kalau alamat publik tidak terdeteksi, isi `PUBLIC_URL` secara manual agar bot memakai webhook. Tanpa itu bot memakai polling.
 
-### 4. Jaga server tetap bangun (keep-alive gratis)
+### 4. Deploy di Koyeb (Docker)
+
+Repo sudah menyertakan `Dockerfile`, jadi Koyeb bisa membangun image-nya langsung.
+
+1. Buka [app.koyeb.com](https://app.koyeb.com) → **Create Service → GitHub**.
+2. Hubungkan akun GitHub, izinkan akses ke repository `kaisi-hub/dompetku-pwa`, pilih branch `main`.
+3. Pada bagian build, pilih **Dockerfile** (bukan buildpack). Port HTTP: `8000`.
+4. Health check (opsional): HTTP `GET /api/health` pada port `8000`.
+5. Pilih region **Singapore** dan instance paling kecil/free.
+6. Isi environment variables:
+   - `APP_PASSCODE`: kode akses dashboard
+   - `SESSION_SECRET`: string acak panjang
+   - `DATABASE_URL`: connection string Neon
+   - `WEBHOOK_SECRET`: string acak
+   - `NODE_ENV=production`
+   - `TZ=Asia/Jakarta`
+   `PUBLIC_URL` tidak perlu diisi — Koyeb otomatis memberi `KOYEB_PUBLIC_DOMAIN` dan aplikasi memakainya sebagai alamat webhook. `PORT` juga diisi otomatis.
+7. Klik **Deploy** dan tunggu status **Healthy**. Alamatnya berbentuk `https://<app>-<organisasi>-<hash>.koyeb.app`.
+8. Buka alamat tersebut, masuk dengan `APP_PASSCODE`, lalu tempel token bot di **Pengaturan → Bot Telegram**.
+
+Catatan:
+
+- Koyeb memberi domain HTTPS otomatis, bukan IP statis. Bot memakai domain itu untuk webhook.
+- Disk container sementara, jadi database tetap di Neon. Data aman saat redeploy atau restart.
+- Kalau **scale to zero** aktif, service tidur saat tidak ada permintaan. Webhook Telegram akan membangunkannya; backup mingguan berjalan setiap kali service aktif.
+
+### 5. Alternatif tanpa kartu kredit: alwaysdata
+
+[alwaysdata](https://www.alwaysdata.com/en/register/?p=2012) punya paket **Free 0 €/bulan tanpa kartu kredit**: 1 GB SSD, RAM 256 MB, ¼ CPU, Node.js LTS, HTTPS gratis, dan SSH/SFTP. Cukup untuk Dompetku pribadi.
+
+1. Daftar di tautan di atas, buat akun (misalnya `dompetku`). Alamat situsmu nanti `https://dompetku.alwaysdata.net`.
+2. Di admin alwaysdata, buka **Environment → Node.js** dan pilih versi LTS (20 atau 22).
+3. Unggah kode dari Git Bash di komputermu (ganti `dompetku` dengan nama akunmu):
+
+   ```bash
+   rsync -av --exclude node_modules --exclude data --exclude .git --exclude .env \
+     ./ dompetku@ssh-dompetku.alwaysdata.net:~/dompetku/
+   ```
+
+   Lalu masuk SSH dan pasang dependensi:
+
+   ```bash
+   ssh dompetku@ssh-dompetku.alwaysdata.net
+   cd ~/dompetku && npm install --omit=dev
+   ```
+
+   Repo GitHub bisa juga dipakai, tapi karena private perlu deploy key. Unggah lewat SFTP lebih cepat untuk sekali pasang.
+
+4. Buat situs: **Web → Sites → Add a site**, pilih tipe **Node.js**, lalu isi:
+   - **Addresses**: `dompetku.alwaysdata.net`
+   - **Command**: `node /home/dompetku/dompetku/src/server.js`
+   - **Working directory**: `/home/dompetku/dompetku`
+   - **Environment**: `APP_PASSCODE`, `SESSION_SECRET`, `DATABASE_URL` (Neon), `WEBHOOK_SECRET`, `TZ=Asia/Jakarta`, `NODE_ENV=production`, dan `PUBLIC_URL=https://dompetku.alwaysdata.net`
+5. Buka **Advanced** pada situs tersebut dan set **idle time** ke `0` supaya server dan bot tidak dihentikan saat tidak ada permintaan.
+6. Aktifkan HTTPS: **Web → Sites → SSL/TLS → Let's Encrypt**, lalu pasang sertifikat untuk alamat tadi.
+7. Buka `https://dompetku.alwaysdata.net`, masuk dengan `APP_PASSCODE`, lalu tempel token bot di **Pengaturan → Bot Telegram**.
+
+Karena `PUBLIC_URL` diisi, bot otomatis memakai webhook dan tidak perlu keep-alive Worker. RAM 256 MB cukup untuk Node + bot; database tetap di Neon sehingga data aman saat server restart.
+
+### 6. Jaga server tetap bangun (keep-alive gratis)
 
 Render free tidur setelah 15 menit tanpa permintaan. Cron gratis di Cloudflare Workers memanggil `/api/health` tiap 10 menit supaya server dan bot tetap siaga.
 
@@ -146,7 +207,7 @@ Worker tidak menyimpan secret karena hanya membaca endpoint health yang memang p
 
 Alternatif tanpa kode: buat monitor HTTP gratis di [uptimerobot.com](https://uptimerobot.com) ke `https://alamat-render-kamu/api/health` setiap 5 menit.
 
-### 5. Pasang di HP dan laptop
+### 7. Pasang di HP dan laptop
 
 Instalasi hanya bisa dari alamat **HTTPS** (alamat Render sudah otomatis HTTPS). Tombol pasang juga tersedia di **Pengaturan → Pasang di HP & laptop** dengan panduan sesuai perangkat.
 

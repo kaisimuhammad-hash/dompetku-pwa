@@ -1,6 +1,11 @@
 import process from 'node:process';
 
-const publicUrl = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '')
+const koyebDomain = (process.env.KOYEB_PUBLIC_DOMAIN || '').trim();
+const publicUrl = (
+  process.env.PUBLIC_URL ||
+  process.env.RENDER_EXTERNAL_URL ||
+  (koyebDomain ? `https://${koyebDomain}` : '')
+)
   .trim()
   .replace(/\/+$/, '');
 const isProd = process.env.NODE_ENV === 'production';
@@ -8,6 +13,7 @@ const backupIntervalDays = Number(process.env.BACKUP_INTERVAL_DAYS || 7);
 
 export const config = {
   port: Number(process.env.PORT || 3000),
+  host: (process.env.HOST || process.env.IP || '0.0.0.0').trim(),
   appPasscode: process.env.APP_PASSCODE || 'dompetku',
   sessionSecret: process.env.SESSION_SECRET || 'dev-secret-jangan-dipakai-di-produksi',
   databaseUrl: (process.env.DATABASE_URL || '').trim(),

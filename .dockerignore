@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+node_modules
+data
+test
+ops
+scripts
+*.md
+Dockerfile
+.dockerignore

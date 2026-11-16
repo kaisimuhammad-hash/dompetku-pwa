@@ -96,7 +96,7 @@ async function main() {
     res.status(status).json({ error: err.message || 'Terjadi kesalahan pada server' });
   });
 
-  const server = app.listen(config.port, '0.0.0.0', () => {
+  const server = app.listen(config.port, config.host, () => {
     console.log(`[server] Dompetku berjalan di http://localhost:${config.port}`);
     if (config.publicUrl) console.log(`[server] URL publik: ${config.publicUrl}`);
   });
