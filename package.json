@@ -15,6 +15,7 @@
     "test": "node --test test/"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.2.17",
     "cookie-parser": "^1.4.7",
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
@@ -22,7 +23,6 @@
     "telegraf": "^4.16.3"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.2.17",
     "sharp": "^0.33.5"
   }
 }
