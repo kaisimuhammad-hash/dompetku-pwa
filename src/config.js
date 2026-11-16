@@ -1,9 +1,11 @@
 import process from 'node:process';
 
 const koyebDomain = (process.env.KOYEB_PUBLIC_DOMAIN || '').trim();
+const railwayDomain = (process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL || '').trim();
 const publicUrl = (
   process.env.PUBLIC_URL ||
   process.env.RENDER_EXTERNAL_URL ||
+  (railwayDomain ? (railwayDomain.startsWith('http') ? railwayDomain : `https://${railwayDomain}`) : '') ||
   (koyebDomain ? `https://${koyebDomain}` : '')
 )
   .trim()
