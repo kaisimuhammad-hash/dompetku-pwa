@@ -85,6 +85,7 @@ export const api = {
     request('/settings/default-account', { method: 'POST', body: { accountId } }),
 
   botStatus: () => request('/bot/status'),
+  botToken: (token) => request('/bot/token', { method: 'POST', body: { token } }),
   botTest: () => request('/bot/test', { method: 'POST' }),
   botDisconnect: () => request('/bot/disconnect', { method: 'POST' }),
 };

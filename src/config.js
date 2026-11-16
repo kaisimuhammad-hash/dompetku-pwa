@@ -1,6 +1,8 @@
 import process from 'node:process';
 
-const publicUrl = (process.env.PUBLIC_URL || '').trim().replace(/\/+$/, '');
+const publicUrl = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '')
+  .trim()
+  .replace(/\/+$/, '');
 const isProd = process.env.NODE_ENV === 'production';
 const backupIntervalDays = Number(process.env.BACKUP_INTERVAL_DAYS || 7);
 

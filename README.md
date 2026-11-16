@@ -44,9 +44,11 @@ npm run seed:demo
 ## Menghubungkan bot Telegram
 
 1. Buka **@BotFather** di Telegram, kirim `/newbot`, pilih nama dan username.
-2. Salin token yang diberikan ke `TELEGRAM_BOT_TOKEN` di `.env`, lalu restart server.
+2. Buka dashboard Dompetku → **Pengaturan → Bot Telegram**, tempel token dari BotFather, lalu tekan **Simpan & hubungkan**. Token disimpan terenkripsi dan bot langsung aktif tanpa restart.
 3. Buka bot kamu dan kirim `/start`. Chat pertama yang memulai bot otomatis menjadi pemilik; chat lain akan ditolak.
 4. Setelah tertaut, tombol **menu** muncul di kiri kolom chat (atau ketik `/menu`). Coba kirim `kopi 25rb`; bot menampilkan draft, tekan **Simpan**.
+
+Token juga masih bisa diisi lewat variabel `TELEGRAM_BOT_TOKEN` bila ingin dikelola dari server. Token yang disimpan dari dashboard dipakai lebih dulu.
 
 Perintah bot:
 
@@ -91,32 +93,37 @@ Bagian ini membuat aplikasi berjalan 24 jam dan bisa dibuka dari HP maupun lapto
 
 ### 3. Deploy di Render
 
-1. Daftar di [render.com](https://render.com), pilih **New → Web Service**, lalu hubungkan repository GitHub tadi.
-2. Isi:
-   - **Runtime**: Node
-   - **Build Command**: `npm install`
-   - **Start Command**: `npm start`
-   - **Plan**: Free
-3. Tambahkan environment variable berikut:
+Cara tercepat memakai blueprint `render.yaml` yang sudah ada di repo:
+
+1. Buka [dashboard.render.com](https://dashboard.render.com), pilih **New → Blueprint**.
+2. Hubungkan repository GitHub Dompetku. Render membaca `render.yaml` secara otomatis.
+3. Saat diminta, isi dua nilai:
+   - `APP_PASSCODE`: kode akses rahasia kamu (jangan pakai `dompetku`).
+   - `DATABASE_URL`: connection string Neon dari langkah 1.
+   `SESSION_SECRET` dan `WEBHOOK_SECRET` dibuat otomatis oleh Render.
+4. Klik **Apply / Deploy** dan tunggu sampai status **Live**.
+5. Buka alamat Render (`https://nama-service.onrender.com`), masuk dengan `APP_PASSCODE`.
+6. Tempel token bot di **Pengaturan → Bot Telegram**, lalu kirim `/start` ke bot kamu.
+
+Alamat publik dibaca otomatis dari `RENDER_EXTERNAL_URL`, jadi `PUBLIC_URL` tidak perlu diisi saat deploy lewat Render. Token bot juga tidak perlu environment variable karena bisa ditempel dari dashboard.
+
+Bila memilih **New → Web Service** secara manual:
 
 | Variable | Nilai |
 | --- | --- |
-| `APP_PASSCODE` | kode akses rahasia kamu (jangan pakai `dompetku`) |
+| `APP_PASSCODE` | kode akses rahasia kamu |
 | `SESSION_SECRET` | hasil `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 | `DATABASE_URL` | connection string Neon |
-| `TELEGRAM_BOT_TOKEN` | token dari BotFather |
-| `WEBHOOK_SECRET` | string acak, mis. hasil perintah di atas |
-| `PUBLIC_URL` | alamat Render kamu, contoh `https://dompetku.onrender.com` |
+| `WEBHOOK_SECRET` | string acak |
 | `TZ` | `Asia/Jakarta` |
 
-4. Deploy. Setelah selesai, buka alamat Render tersebut dan masuk dengan `APP_PASSCODE`.
-5. Kirim ulang `/start` ke bot bila sebelumnya sudah pernah terhubung di lokal. Bot akan memakai webhook karena `PUBLIC_URL` sudah diisi.
+Build Command `npm install`, Start Command `npm start`, Plan Free.
 
 Catatan:
 
 - Render free tidur setelah tidak dipakai. Permintaan pertama bisa lambat beberapa detik; bot akan bangun sendiri saat ada pesan. Langkah 4 menjaga server tetap bangun tanpa biaya.
 - Disk Render free bersifat sementara, karena itu database wajib memakai Neon. Data tidak hilang saat redeploy.
-- Kalau `PUBLIC_URL` belum diisi, bot memakai mode polling. Saat online, isi `PUBLIC_URL` agar webhook aktif.
+- Kalau alamat publik tidak terdeteksi, isi `PUBLIC_URL` secara manual agar bot memakai webhook. Tanpa itu bot memakai polling.
 
 ### 4. Jaga server tetap bangun (keep-alive gratis)
 

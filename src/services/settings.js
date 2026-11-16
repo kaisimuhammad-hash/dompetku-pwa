@@ -1,4 +1,7 @@
 import { db } from '../db/index.js';
+import { decryptSecret, encryptSecret } from '../lib/secrets.js';
+
+const BOT_TOKEN_KEY = 'bot_token';
 
 export async function getSetting(key, fallback = null) {
   const { rows } = await db.query('SELECT value FROM settings WHERE key = $1', [key]);
@@ -19,6 +22,21 @@ export async function deleteSetting(key) {
 
 export async function getOwnerChatId() {
   return getSetting('owner_chat_id', null);
+}
+
+export async function getStoredBotToken() {
+  const raw = await getSetting(BOT_TOKEN_KEY, null);
+  if (!raw) return null;
+  const token = decryptSecret(raw);
+  if (!token) {
+    console.warn('[bot] token tersimpan tidak bisa dibaca. Tempel ulang dari dashboard.');
+    return null;
+  }
+  return token;
+}
+
+export async function setStoredBotToken(token) {
+  await setSetting(BOT_TOKEN_KEY, encryptSecret(token));
 }
 
 export async function getAllowedChatIds() {

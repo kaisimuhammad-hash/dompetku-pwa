@@ -6,7 +6,8 @@ import { config } from './config.js';
 import { initDb } from './db/index.js';
 import { ensureSeed } from './db/seed.js';
 import { createApiRouter } from './routes/api.js';
-import { startBot } from './bot/index.js';
+import { TELEGRAM_WEBHOOK_PATH, getActiveBot, startBot, telegramWebhookHandler } from './bot/index.js';
+import { startBackupScheduler } from './services/backup.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, '..', 'public');
@@ -50,10 +51,12 @@ async function main() {
     next();
   });
 
-  let botInstance = null;
-  const apiRouter = createApiRouter({ getBot: () => botInstance });
+  const apiRouter = createApiRouter({ getBot: getActiveBot });
 
-  botInstance = await startBot(app);
+  await startBot();
+  startBackupScheduler(getActiveBot);
+
+  app.post(TELEGRAM_WEBHOOK_PATH, express.json({ limit: '1mb' }), telegramWebhookHandler);
 
   app.use(
     '/api',

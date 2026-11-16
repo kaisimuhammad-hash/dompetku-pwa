@@ -35,8 +35,11 @@ import {
   deleteSetting,
   getDefaultAccountId,
   getOwnerChatId,
+  getStoredBotToken,
   setDefaultAccountId,
+  setStoredBotToken,
 } from '../services/settings.js';
+import { connectBot, getBotSource } from '../bot/index.js';
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
@@ -317,9 +320,12 @@ export function createApiRouter({ getBot }) {
     wrap(async (req, res) => {
       const bot = getBot();
       const ownerChatId = await getOwnerChatId();
+      const storedToken = await getStoredBotToken().catch(() => null);
       res.json({
-        enabled: Boolean(config.botToken),
+        enabled: Boolean(bot),
         running: Boolean(bot),
+        hasStoredToken: Boolean(storedToken),
+        source: getBotSource(),
         username: bot?.botInfo?.username || null,
         connected: Boolean(ownerChatId),
         ownerChatId: ownerChatId ? maskChatId(ownerChatId) : null,
@@ -329,10 +335,29 @@ export function createApiRouter({ getBot }) {
   );
 
   router.post(
+    '/bot/token',
+    wrap(async (req, res) => {
+      const token = String(req.body?.token || '').trim();
+      if (!/^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(token)) {
+        throw badRequest(
+          'Format token tidak valid. Salin ulang dari @BotFather (contoh: 123456789:AA...).',
+        );
+      }
+      const bot = await connectBot(token, { source: 'dashboard' });
+      await setStoredBotToken(token);
+      res.json({
+        ok: true,
+        username: bot.botInfo?.username || null,
+        mode: config.publicUrl ? 'webhook' : 'polling',
+      });
+    }),
+  );
+
+  router.post(
     '/bot/test',
     wrap(async (req, res) => {
       const bot = getBot();
-      if (!bot) throw new AppError('Bot belum aktif. Isi TELEGRAM_BOT_TOKEN lalu restart server.', 503);
+      if (!bot) throw new AppError('Bot belum aktif. Tempel token bot di Pengaturan.', 503);
       const ownerChatId = await getOwnerChatId();
       if (!ownerChatId) throw badRequest('Bot belum terhubung. Buka Telegram lalu kirim /start ke bot kamu.');
       await bot.telegram.sendMessage(

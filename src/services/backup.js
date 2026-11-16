@@ -48,11 +48,13 @@ export async function runBackupIfDue(bot, now = Date.now()) {
   return sendBackup(bot);
 }
 
-export function startBackupScheduler(bot, { intervalMs = CHECK_INTERVAL_MS } = {}) {
+export function startBackupScheduler(getBot, { intervalMs = CHECK_INTERVAL_MS } = {}) {
   let running = false;
 
   const tick = async () => {
     if (running) return;
+    const bot = typeof getBot === 'function' ? getBot() : getBot;
+    if (!bot) return;
     running = true;
     try {
       const result = await runBackupIfDue(bot);

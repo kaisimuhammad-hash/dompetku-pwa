@@ -1,6 +1,6 @@
-import express from 'express';
 import { Markup, Telegraf } from 'telegraf';
 import { config } from '../config.js';
+import { AppError } from '../lib/errors.js';
 import { ParseError, parseMessage } from '../lib/parse.js';
 import {
   currentMonth,
@@ -15,11 +15,27 @@ import { fallbackCategory, listCategories } from '../services/categories.js';
 import { budgetAlert, listBudgets } from '../services/budgets.js';
 import { categoryBreakdown, monthSummary } from '../services/reports.js';
 import { createTransaction, deleteTransaction } from '../services/transactions.js';
-import { getDefaultAccountId, getOwnerChatId, setSetting } from '../services/settings.js';
-import { sendBackup, startBackupScheduler } from '../services/backup.js';
+import { getDefaultAccountId, getOwnerChatId, getStoredBotToken, setSetting } from '../services/settings.js';
+import { sendBackup } from '../services/backup.js';
 
 const pendingDrafts = new Map();
 const DRAFT_TTL = 30 * 60 * 1000;
+
+export const TELEGRAM_WEBHOOK_PATH = '/api/telegram/webhook';
+
+let activeBot = null;
+let activeWebhook = null;
+let activeSource = null;
+
+export function getActiveBot() {
+  return activeBot;
+}
+
+export function getBotSource() {
+  return activeSource;
+}
+
+setInterval(cleanupDrafts, 5 * 60 * 1000).unref();
 
 function esc(value) {
   return String(value ?? '')
@@ -275,13 +291,8 @@ async function sendDraft(ctx, chatId, draft) {
   await ctx.replyWithHTML(await renderDraft(draft), draftKeyboard(draft));
 }
 
-export async function startBot(app) {
-  if (!config.botToken) {
-    console.warn('[bot] TELEGRAM_BOT_TOKEN belum diisi — bot Telegram nonaktif.');
-    return null;
-  }
-
-  const bot = new Telegraf(config.botToken);
+function buildBot(token) {
+  const bot = new Telegraf(token);
   bot.catch((err, ctx) => {
     console.error('[bot] error:', err.message);
     ctx.reply('Terjadi kesalahan. Coba lagi sebentar lagi.').catch(() => {});
@@ -562,48 +573,58 @@ export async function startBot(app) {
     }
   });
 
-  setInterval(cleanupDrafts, 5 * 60 * 1000).unref();
+  return bot;
+}
+
+const BOT_COMMANDS = [
+  { command: 'start', description: 'Tautkan chat dan buka menu' },
+  { command: 'menu', description: 'Buka menu utama' },
+  { command: 'saldo', description: 'Lihat saldo semua dompet' },
+  { command: 'laporan', description: 'Ringkasan bulan ini' },
+  { command: 'anggaran', description: 'Status anggaran bulan ini' },
+  { command: 'kategori', description: 'Daftar kategori' },
+  { command: 'batal', description: 'Batalkan draft' },
+  { command: 'backup', description: 'Kirim backup data sekarang' },
+  { command: 'help', description: 'Bantuan' },
+];
+
+async function stopBot(bot, { dropWebhook = true } = {}) {
+  if (!bot) return;
+  if (dropWebhook) {
+    try {
+      await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+    } catch {}
+  }
+  try {
+    await bot.stop('SIGTERM');
+  } catch {}
+}
+
+export async function connectBot(token, { source = 'dashboard' } = {}) {
+  const cleanToken = String(token || '').trim();
+  const bot = buildBot(cleanToken);
 
   let me;
   try {
     me = await bot.telegram.getMe();
-    bot.botInfo = me;
-    console.log(`[bot] terhubung sebagai @${me.username}`);
-  } catch (err) {
-    console.error('[bot] token tidak valid:', err.message);
-    return null;
+  } catch {
+    throw new AppError('Token bot tidak valid atau sudah dicabut. Salin ulang dari @BotFather.', 400);
   }
+  bot.botInfo = me;
 
-  await bot.telegram
-    .setMyCommands([
-      { command: 'start', description: 'Tautkan chat dan buka menu' },
-      { command: 'menu', description: 'Buka menu utama' },
-      { command: 'saldo', description: 'Lihat saldo semua dompet' },
-      { command: 'laporan', description: 'Ringkasan bulan ini' },
-      { command: 'anggaran', description: 'Status anggaran bulan ini' },
-      { command: 'kategori', description: 'Daftar kategori' },
-      { command: 'batal', description: 'Batalkan draft' },
-      { command: 'backup', description: 'Kirim backup data sekarang' },
-      { command: 'help', description: 'Bantuan' },
-    ])
-    .catch(() => {});
+  await bot.telegram.setMyCommands(BOT_COMMANDS).catch(() => {});
+  await bot.telegram.setChatMenuButton({ menuButton: { type: 'commands' } }).catch(() => {});
 
-  await bot.telegram
-    .setChatMenuButton({ menuButton: { type: 'commands' } })
-    .catch(() => {});
+  const webhook = bot.webhookCallback(TELEGRAM_WEBHOOK_PATH, {
+    secretToken: config.webhookSecret,
+  });
 
   if (config.publicUrl) {
-    const hookPath = '/api/telegram/webhook';
-    await bot.telegram.setWebhook(`${config.publicUrl}${hookPath}`, {
+    await bot.telegram.setWebhook(`${config.publicUrl}${TELEGRAM_WEBHOOK_PATH}`, {
       secret_token: config.webhookSecret,
       drop_pending_updates: true,
     });
-    app.post(
-      hookPath,
-      express.json({ limit: '1mb' }),
-      bot.webhookCallback(hookPath, { secretToken: config.webhookSecret }),
-    );
-    console.log(`[bot] mode webhook: ${config.publicUrl}${hookPath}`);
+    console.log(`[bot] mode webhook: ${config.publicUrl}${TELEGRAM_WEBHOOK_PATH}`);
   } else {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
     bot.launch({ dropPendingUpdates: true }).catch((err) => {
@@ -612,7 +633,54 @@ export async function startBot(app) {
     console.log('[bot] mode polling aktif');
   }
 
-  startBackupScheduler(bot);
+  const previousBot = activeBot;
+  activeBot = bot;
+  activeWebhook = webhook;
+  activeSource = source;
+  console.log(`[bot] terhubung sebagai @${me.username} (${source})`);
+
+  if (previousBot && previousBot !== bot) {
+    const sameToken = previousBot.telegram.token === bot.telegram.token;
+    await stopBot(previousBot, { dropWebhook: !sameToken });
+  }
 
   return bot;
+}
+
+export async function disconnectBot() {
+  const bot = activeBot;
+  activeBot = null;
+  activeWebhook = null;
+  activeSource = null;
+  await stopBot(bot);
+  return Boolean(bot);
+}
+
+export function telegramWebhookHandler(req, res, next) {
+  if (!activeWebhook) {
+    return res.status(503).json({ ok: false, error: 'Bot Telegram belum aktif' });
+  }
+  return activeWebhook(req, res, next);
+}
+
+export async function startBot() {
+  const stored = await getStoredBotToken().catch(() => null);
+  const candidates = [
+    stored ? { token: stored, source: 'dashboard' } : null,
+    config.botToken ? { token: config.botToken, source: 'env' } : null,
+  ].filter(Boolean);
+
+  if (candidates.length === 0) {
+    console.log('[bot] belum ada token. Tempel token dari dashboard → Pengaturan.');
+    return null;
+  }
+
+  for (const candidate of candidates) {
+    try {
+      return await connectBot(candidate.token, { source: candidate.source });
+    } catch (err) {
+      console.error(`[bot] gagal memakai token ${candidate.source}:`, err.message);
+    }
+  }
+  return null;
 }

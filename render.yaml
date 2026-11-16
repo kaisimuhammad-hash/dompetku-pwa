@@ -15,11 +15,7 @@ services:
         generateValue: true
       - key: DATABASE_URL
         sync: false
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
       - key: WEBHOOK_SECRET
         generateValue: true
-      - key: PUBLIC_URL
-        sync: false
       - key: TZ
         value: Asia/Jakarta

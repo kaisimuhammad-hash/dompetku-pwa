@@ -789,6 +789,14 @@ export async function settingsPage(ctx) {
             'Atau menu ⋮ → “Instal Dompetku”. Di Edge: menu … → Aplikasi → Instal situs ini.',
           ];
 
+  const tokenForm = `
+    <form class="mt-16" data-bot-token-form>
+      <label class="label" for="bot-token">Token bot dari @BotFather</label>
+      <input class="input" id="bot-token" name="token" type="password" autocomplete="off" spellcheck="false" placeholder="123456789:AA..." />
+      <p class="hint" style="margin:6px 0 10px">Tempel token dari @BotFather. Disimpan terenkripsi dan langsung aktif tanpa restart server.</p>
+      <button class="btn primary small" type="submit" data-bot-save>Simpan &amp; hubungkan</button>
+    </form>`;
+
   const botCard = `
     <section class="card card-pad">
       <div class="row-between">
@@ -813,14 +821,19 @@ export async function settingsPage(ctx) {
               <button class="btn ghost small" data-bot-test>Kirim pesan uji</button>
               <button class="btn danger small" data-bot-disconnect>Putuskan</button>
             </div>
-            ${bot.username ? `<p class="hint mt-12">Buka <a class="link-btn" href="https://t.me/${esc(bot.username)}" target="_blank" rel="noopener">t.me/${esc(bot.username)}</a> — menu bot ada di kiri kolom chat.</p>` : ''}`
-          : `<div class="steps">
+            ${bot.username ? `<p class="hint mt-12">Buka <a class="link-btn" href="https://t.me/${esc(bot.username)}" target="_blank" rel="noopener">t.me/${esc(bot.username)}</a> — menu bot ada di kiri kolom chat.</p>` : ''}
+            <details class="mt-16">
+              <summary class="link-btn">Ganti token bot</summary>
+              ${tokenForm}
+            </details>`
+          : `<div class="steps mt-12">
               <div class="step"><span class="step-num">1</span><span>Buat bot lewat <strong>@BotFather</strong> di Telegram, kirim <code>/newbot</code>, lalu salin token.</span></div>
-              <div class="step"><span class="step-num">2</span><span>Isi token ke variabel <code>TELEGRAM_BOT_TOKEN</code> di pengaturan server, lalu restart.</span></div>
-              <div class="step"><span class="step-num">3</span><span>Buka bot kamu dan kirim <code>/start</code>. Setelah itu chat ini langsung terhubung.</span></div>
+              <div class="step"><span class="step-num">2</span><span>Tempel token di kolom bawah, lalu tekan <strong>Simpan &amp; hubungkan</strong>.</span></div>
+              <div class="step"><span class="step-num">3</span><span>Buka bot kamu dan kirim <code>/start</code>. Chat langsung terhubung.</span></div>
             </div>
             ${bot.username ? `<p class="hint mt-12">Bot: <a class="link-btn" href="https://t.me/${esc(bot.username)}" target="_blank" rel="noopener">t.me/${esc(bot.username)}</a></p>` : ''}
-            ${bot.enabled ? `<button class="btn ghost small mt-12" data-bot-test>Kirim pesan uji</button>` : ''}`
+            ${bot.enabled ? `<button class="btn ghost small mt-12" data-bot-test>Kirim pesan uji</button>` : ''}
+            ${tokenForm}`
       }
     </section>`;
 
@@ -1020,6 +1033,31 @@ export async function settingsPage(ctx) {
       }
     });
   }
+
+  ctx.view.querySelectorAll('[data-bot-token-form]').forEach((form) => {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const input = form.querySelector('#bot-token');
+      const button = form.querySelector('[data-bot-save]');
+      const token = input.value.trim();
+      if (!token) {
+        toast('Tempel token bot dulu', 'error');
+        input.focus();
+        return;
+      }
+      try {
+        setButtonBusy(button, true, 'Menghubungkan…');
+        const result = await api.botToken(token);
+        input.value = '';
+        toast(result.username ? `Bot @${result.username} terhubung` : 'Bot terhubung');
+        ctx.refresh();
+      } catch (error) {
+        toast(error.message, 'error');
+      } finally {
+        setButtonBusy(button, false);
+      }
+    });
+  });
 
   ctx.view.querySelectorAll('[data-category-add]').forEach((button) => {
     button.addEventListener('click', () =>
