@@ -13,8 +13,9 @@ Pencatatan keuangan pribadi yang terhubung ke Telegram, dengan dashboard PWA yan
 ```
 src/            server Express, bot Telegraf, service, dan REST API
 public/         dashboard PWA (HTML, CSS, JS tanpa build step)
+ops/keepalive/  Cloudflare Worker cron agar Render tetap bangun
 scripts/        generator ikon dan data demo
-test/           unit test parser pesan Telegram
+test/           unit test
 ```
 
 ## Menjalankan di komputer
@@ -58,6 +59,7 @@ Perintah bot:
 | `/anggaran` | Status anggaran bulan ini |
 | `/kategori` | Daftar kategori beserta kata kunci |
 | `/batal` | Membatalkan draft yang belum disimpan |
+| `/backup` | Mengirim file backup JSON sekarang |
 | `/help` | Bantuan |
 
 Contoh pesan:
@@ -112,11 +114,32 @@ Bagian ini membuat aplikasi berjalan 24 jam dan bisa dibuka dari HP maupun lapto
 
 Catatan:
 
-- Render free tidur setelah tidak dipakai. Permintaan pertama bisa lambat beberapa detik; bot akan bangun sendiri saat ada pesan.
+- Render free tidur setelah tidak dipakai. Permintaan pertama bisa lambat beberapa detik; bot akan bangun sendiri saat ada pesan. Langkah 4 menjaga server tetap bangun tanpa biaya.
 - Disk Render free bersifat sementara, karena itu database wajib memakai Neon. Data tidak hilang saat redeploy.
 - Kalau `PUBLIC_URL` belum diisi, bot memakai mode polling. Saat online, isi `PUBLIC_URL` agar webhook aktif.
 
-### 4. Pasang di HP dan laptop
+### 4. Jaga server tetap bangun (keep-alive gratis)
+
+Render free tidur setelah 15 menit tanpa permintaan. Cron gratis di Cloudflare Workers memanggil `/api/health` tiap 10 menit supaya server dan bot tetap siaga.
+
+1. Daftar gratis di [dash.cloudflare.com](https://dash.cloudflare.com) (tidak perlu kartu kredit).
+2. Buka `ops/keepalive/wrangler.toml`, ganti `APP_URL` dengan alamat Render kamu.
+3. Dari folder proyek jalankan:
+
+   ```bash
+   cd ops/keepalive
+   npx wrangler login
+   npx wrangler deploy
+   ```
+
+4. Buka alamat worker yang muncul di browser. Hasilnya `{"ok":true,...}` dan berisi alamat Render yang dipanggil.
+5. Pantau tiap ping dengan `npx wrangler tail`.
+
+Worker tidak menyimpan secret karena hanya membaca endpoint health yang memang publik. Batas gratis Cloudflare (100.000 permintaan/hari) jauh di atas kebutuhan ini.
+
+Alternatif tanpa kode: buat monitor HTTP gratis di [uptimerobot.com](https://uptimerobot.com) ke `https://alamat-render-kamu/api/health` setiap 5 menit.
+
+### 5. Pasang di HP dan laptop
 
 Instalasi hanya bisa dari alamat **HTTPS** (alamat Render sudah otomatis HTTPS). Tombol pasang juga tersedia di **Pengaturan → Pasang di HP & laptop** dengan panduan sesuai perangkat.
 
@@ -152,10 +175,18 @@ Dompetku yang sudah terpasang tetap memakai data dan sesi login yang sama di sem
 ```bash
 npm run dev        # server dengan auto-reload
 npm start          # server produksi
-npm test           # unit test parser
+npm test           # unit test
 npm run icons      # membuat ulang ikon PNG dari SVG
 npm run seed:demo  # data contoh (hanya bila database kosong)
 ```
+
+## Backup otomatis
+
+- Setiap 7 hari bot mengirim file `dompetku-backup-YYYY-MM-DD.json` ke chat pemilik. Isinya seluruh dompet, kategori, transaksi, dan anggaran.
+- Penjadwalan dicek tiap 15 menit dan memakai penanda `backup_last_sent_at` di database, jadi backup tidak terkirim dobel walau server restart. Backup pertama terkirim begitu bot sudah tertaut.
+- Kirim `/backup` kapan saja untuk meminta file backup langsung.
+- Ubah jarak backup lewat `BACKUP_INTERVAL_DAYS` (mis. `30`).
+- Simpan file backup di luar HP (Google Drive, laptop, dsb.). Isinya JSON mentah untuk arsip; pemulihan masih manual.
 
 ## Ekspor data
 

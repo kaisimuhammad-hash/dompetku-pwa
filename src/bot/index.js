@@ -16,6 +16,7 @@ import { budgetAlert, listBudgets } from '../services/budgets.js';
 import { categoryBreakdown, monthSummary } from '../services/reports.js';
 import { createTransaction, deleteTransaction } from '../services/transactions.js';
 import { getDefaultAccountId, getOwnerChatId, setSetting } from '../services/settings.js';
+import { sendBackup, startBackupScheduler } from '../services/backup.js';
 
 const pendingDrafts = new Map();
 const DRAFT_TTL = 30 * 60 * 1000;
@@ -132,6 +133,7 @@ function helpText() {
     '/anggaran — status anggaran',
     '/kategori — daftar kategori',
     '/batal — batalkan draft',
+    '/backup — kirim backup data sekarang',
     '/help — bantuan ini',
     '',
     'Tombol menu juga tersedia di kiri kolom chat.',
@@ -336,6 +338,15 @@ export async function startBot(app) {
   bot.command('batal', async (ctx) => {
     pendingDrafts.delete(String(ctx.chat.id));
     await ctx.reply('Draft dibatalkan.');
+  });
+
+  bot.command('backup', async (ctx) => {
+    try {
+      await sendBackup(bot);
+    } catch (err) {
+      console.error('[bot] gagal mengirim backup:', err.message);
+      await ctx.reply('Backup gagal dikirim. Coba lagi sebentar lagi.');
+    }
   });
 
   bot.on('text', async (ctx) => {
@@ -572,6 +583,7 @@ export async function startBot(app) {
       { command: 'anggaran', description: 'Status anggaran bulan ini' },
       { command: 'kategori', description: 'Daftar kategori' },
       { command: 'batal', description: 'Batalkan draft' },
+      { command: 'backup', description: 'Kirim backup data sekarang' },
       { command: 'help', description: 'Bantuan' },
     ])
     .catch(() => {});
@@ -599,6 +611,8 @@ export async function startBot(app) {
     });
     console.log('[bot] mode polling aktif');
   }
+
+  startBackupScheduler(bot);
 
   return bot;
 }
