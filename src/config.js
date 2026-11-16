@@ -16,7 +16,7 @@ const backupIntervalDays = Number(process.env.BACKUP_INTERVAL_DAYS || 7);
 export const config = {
   port: Number(process.env.PORT || 3000),
   host: (process.env.HOST || process.env.IP || '0.0.0.0').trim(),
-  appPasscode: process.env.APP_PASSCODE || 'dompetku',
+  appPasscode: process.env.APP_PASSCODE || '12345678',
   sessionSecret: process.env.SESSION_SECRET || 'dev-secret-jangan-dipakai-di-produksi',
   databaseUrl: (process.env.DATABASE_URL || '').trim(),
   botToken: (process.env.TELEGRAM_BOT_TOKEN || '').trim(),
