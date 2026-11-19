@@ -110,6 +110,115 @@ export function sparkline(values) {
   </svg>`;
 }
 
+export function donutChartWithLegend(items, total) {
+  const r = 46;
+  const circumference = 2 * Math.PI * r;
+  const visible = items.filter((item) => item.amount > 0);
+  let offset = 0;
+  const segments = [];
+
+  visible.forEach((item) => {
+    const fraction = total > 0 ? item.amount / total : 0;
+    const length = Math.max(fraction * circumference - 2, 0);
+    segments.push(
+      `<circle cx="60" cy="60" r="${r}" fill="none" stroke="${item.color}" stroke-width="16" stroke-dasharray="${length.toFixed(2)} ${(circumference - length).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}" stroke-linecap="round"><title>${item.name}: ${fmtIDR(item.amount)} (${item.percent}%)</title></circle>`,
+    );
+    offset += fraction * circumference;
+  });
+
+  const svg = `<svg viewBox="0 0 120 120" class="donut-chart-svg" role="img" aria-label="Alokasi Pengeluaran">
+    <circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--surface-3)" stroke-width="16"/>
+    ${segments.join('')}
+  </svg>`;
+
+  const legend = visible.slice(0, 9).map((item) => `
+    <div class="donut-legend-item">
+      <span class="donut-legend-dot" style="background-color: ${item.color}"></span>
+      <span class="donut-legend-name" title="${item.name}">${item.name}</span>
+      <span class="donut-legend-pct">${item.percent}%</span>
+    </div>
+  `).join('');
+
+  return { svg, legend };
+}
+
+export function dailyExpenseLineChart(days) {
+  const W = 820;
+  const H = 270;
+  const pad = { top: 38, right: 24, bottom: 32, left: 48 };
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+
+  const values = days.map((d) => d.expense);
+  const maxVal = Math.max(...values, 50_000);
+  const max = niceMax(maxVal);
+
+  const step = plotW / Math.max(days.length - 1, 1);
+  const points = days.map((d, index) => {
+    const x = pad.left + step * index;
+    const y = pad.top + plotH - (d.expense / max) * plotH;
+    return { x, y, day: d.day, expense: d.expense, date: d.date };
+  });
+
+  const sorted = [...values].sort((a, b) => b - a);
+  const topThreshold = sorted[Math.min(5, Math.floor(sorted.length * 0.25))] || max * 0.25;
+
+  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+  const areaD = `${pathD} L ${points[points.length - 1].x.toFixed(1)} ${(pad.top + plotH).toFixed(1)} L ${points[0].x.toFixed(1)} ${(pad.top + plotH).toFixed(1)} Z`;
+
+  const parts = [];
+  for (let i = 0; i <= 3; i += 1) {
+    const y = pad.top + plotH - (plotH * i) / 3;
+    const val = (max * i) / 3;
+    parts.push(
+      `<line class="grid-line" x1="${pad.left}" y1="${y.toFixed(1)}" x2="${W - pad.right}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-dasharray="3 3"/>`,
+      `<text x="${pad.left - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" fill="var(--muted)" font-size="10">${fmtCompact(val)}</text>`,
+    );
+  }
+
+  points.forEach((p) => {
+    if (p.day === 1 || p.day % 2 === 0 || p.day === days.length) {
+      parts.push(
+        `<line x1="${p.x.toFixed(1)}" y1="${pad.top}" x2="${p.x.toFixed(1)}" y2="${(pad.top + plotH).toFixed(1)}" stroke="var(--border)" stroke-opacity="0.3"/>`,
+        `<text x="${p.x.toFixed(1)}" y="${H - 12}" text-anchor="middle" fill="var(--muted)" font-size="10">${p.day}</text>`,
+      );
+    }
+  });
+
+  parts.push(
+    `<defs>
+      <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#475569" stop-opacity="0.25"/>
+        <stop offset="100%" stop-color="#475569" stop-opacity="0.02"/>
+      </linearGradient>
+    </defs>`,
+    `<path d="${areaD}" fill="url(#areaGrad)"/>`,
+    `<path d="${pathD}" fill="none" stroke="#334155" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`,
+  );
+
+  points.forEach((p) => {
+    const isHigh = p.expense >= topThreshold && p.expense > 0;
+    parts.push(
+      `<g class="chart-point" tabindex="0">
+        <title>Tanggal ${p.day}: ${fmtIDR(p.expense)}</title>
+        <circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${isHigh ? 4.5 : 3}" fill="${isHigh ? '#0f172a' : '#64748b'}" stroke="#ffffff" stroke-width="1.5"/>`,
+    );
+
+    if (isHigh) {
+      const tagText = fmtCompact(p.expense);
+      const tagW = Math.max(tagText.length * 7 + 10, 42);
+      const tagY = Math.max(p.y - 12, 14);
+      parts.push(
+        `<rect x="${(p.x - tagW / 2).toFixed(1)}" y="${(tagY - 11).toFixed(1)}" width="${tagW}" height="14" rx="3" fill="#ffffff" stroke="#94a3b8" stroke-width="0.8"/>
+        <text x="${p.x.toFixed(1)}" y="${tagY.toFixed(1)}" text-anchor="middle" font-size="9" font-weight="600" fill="#1e293b">${tagText}</text>`,
+      );
+    }
+    parts.push('</g>');
+  });
+
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart-svg daily-line-chart" role="img" aria-label="Grafik pengeluaran harian">${parts.join('')}</svg>`;
+}
+
 export function totalLabel(value) {
   return fmtNumber(value);
 }

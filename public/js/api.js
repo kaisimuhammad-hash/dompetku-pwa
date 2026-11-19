@@ -54,7 +54,7 @@ export const api = {
   login: (passcode) => request('/auth/login', { method: 'POST', body: { passcode } }),
   logout: () => request('/auth/logout', { method: 'POST' }),
 
-  overview: (month) => request(`/overview${qs({ month })}`),
+  overview: (month, accountId) => request(`/overview${qs({ month, accountId: accountId || undefined })}`),
   cashflow: (month, months = 6) => request(`/cashflow${qs({ month, months })}`),
 
   transactions: (filters) => request(`/transactions${qs(filters)}`),

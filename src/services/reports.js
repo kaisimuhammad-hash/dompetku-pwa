@@ -27,15 +27,21 @@ function assertMonth(month) {
   if (!isValidMonth(month)) throw badRequest('Format bulan harus YYYY-MM');
 }
 
-export async function monthSummary(month = currentMonth()) {
+export async function monthSummary(month = currentMonth(), accountId = null) {
   assertMonth(month);
   const { start, end } = monthBounds(month);
+  const params = [start, end];
+  let filter = '';
+  if (accountId) {
+    params.push(Number(accountId));
+    filter = ' AND account_id = $3';
+  }
   const { rows } = await db.query(
     `SELECT kind, COALESCE(SUM(amount), 0) AS total, count(*)::int AS count
      FROM transactions
-     WHERE occurred_on >= $1 AND occurred_on < $2 AND kind IN ('expense', 'income')
+     WHERE occurred_on >= $1 AND occurred_on < $2 AND kind IN ('expense', 'income')${filter}
      GROUP BY kind`,
-    [start, end],
+    params,
   );
   let income = 0;
   let expense = 0;
@@ -55,15 +61,21 @@ export async function monthSummary(month = currentMonth()) {
   };
 }
 
-export async function dailySeries(month = currentMonth()) {
+export async function dailySeries(month = currentMonth(), accountId = null) {
   assertMonth(month);
   const { start, end } = monthBounds(month);
+  const params = [start, end];
+  let filter = '';
+  if (accountId) {
+    params.push(Number(accountId));
+    filter = ' AND account_id = $3';
+  }
   const { rows } = await db.query(
     `SELECT occurred_on, kind, COALESCE(SUM(amount), 0) AS total
      FROM transactions
-     WHERE occurred_on >= $1 AND occurred_on < $2 AND kind IN ('expense', 'income')
+     WHERE occurred_on >= $1 AND occurred_on < $2 AND kind IN ('expense', 'income')${filter}
      GROUP BY occurred_on, kind`,
-    [start, end],
+    params,
   );
   const total = daysInMonth(month);
   const days = Array.from({ length: total }, (_, i) => ({
@@ -83,18 +95,24 @@ export async function dailySeries(month = currentMonth()) {
   return days;
 }
 
-export async function categoryBreakdown(month = currentMonth(), kind = 'expense') {
+export async function categoryBreakdown(month = currentMonth(), kind = 'expense', accountId = null) {
   assertMonth(month);
   const { start, end } = monthBounds(month);
+  const params = [start, end, kind];
+  let filter = '';
+  if (accountId) {
+    params.push(Number(accountId));
+    filter = ' AND t.account_id = $4';
+  }
   const { rows } = await db.query(
     `SELECT t.category_id, c.name, c.icon, c.color,
             COALESCE(SUM(t.amount), 0) AS total, count(*)::int AS count
      FROM transactions t
      LEFT JOIN categories c ON c.id = t.category_id
-     WHERE t.kind = $3 AND t.occurred_on >= $1 AND t.occurred_on < $2
+     WHERE t.kind = $3 AND t.occurred_on >= $1 AND t.occurred_on < $2${filter}
      GROUP BY t.category_id, c.name, c.icon, c.color
      ORDER BY total DESC`,
-    [start, end, kind],
+    params,
   );
   const total = rows.reduce((acc, row) => acc + toNumber(row.total), 0);
   return rows.map((row) => {
@@ -111,39 +129,151 @@ export async function categoryBreakdown(month = currentMonth(), kind = 'expense'
   });
 }
 
-export async function overview(month = currentMonth()) {
+export async function overview(month = currentMonth(), accountId = null) {
   assertMonth(month);
   const previousMonth = shiftMonth(month, -1);
-  const [summary, previous, daily, categories, budgets, accounts, balance, recent] = await Promise.all([
-    monthSummary(month),
-    monthSummary(previousMonth),
-    dailySeries(month),
-    categoryBreakdown(month, 'expense'),
-    listBudgets(month),
-    listAccounts(),
-    totalBalance(),
-    listTransactions({ limit: 6 }),
-  ]);
+  const [summary, previous, daily, categories, previousCategories, budgets, accounts, balance, recent] =
+    await Promise.all([
+      monthSummary(month, accountId),
+      monthSummary(previousMonth, accountId),
+      dailySeries(month, accountId),
+      categoryBreakdown(month, 'expense', accountId),
+      categoryBreakdown(previousMonth, 'expense', accountId),
+      listBudgets(month),
+      listAccounts(),
+      totalBalance(),
+      listTransactions({ limit: 8, accountId: accountId || undefined }),
+    ]);
 
   const change = (current, prev) => {
-    if (!prev) return current > 0 ? 100 : null;
+    if (!prev) return current > 0 ? 100 : 0;
     return Math.round(((current - prev) / prev) * 100);
   };
 
   const totalLimit = budgets.reduce((acc, b) => acc + b.limit, 0);
   const totalSpent = budgets.reduce((acc, b) => acc + b.spent, 0);
 
+  // 50/30/20 Budgeting Rule mapping
+  const isNeeds = (name) =>
+    /makan|minum|tagihan|utilitas|listrik|air|pdam|internet|wifi|sewa|kos|rumah|transport|bensin|bbm|kesehatan|obat|dokter|pendidikan|buku|sekolah|kuliah|popok|pokok|belanja bulanan/i.test(
+      name,
+    );
+  const isSavings = (name) =>
+    /investasi|tabungan|reksadana|saham|crypto|darurat|deposito|rutin/i.test(name);
+
+  let needsSpent = 0;
+  let wantsSpent = 0;
+  let savingsAllocated = 0;
+
+  for (const cat of categories) {
+    if (isSavings(cat.name)) {
+      savingsAllocated += cat.amount;
+      cat.budgetGroup = 'savings';
+    } else if (isNeeds(cat.name)) {
+      needsSpent += cat.amount;
+      cat.budgetGroup = 'needs';
+    } else {
+      wantsSpent += cat.amount;
+      cat.budgetGroup = 'wants';
+    }
+  }
+
+  const targetNeeds = Math.round(summary.income * 0.5);
+  const targetWants = Math.round(summary.income * 0.3);
+  const targetSavings = Math.round(summary.income * 0.2);
+
+  const budget503020 = {
+    income: summary.income,
+    needs: {
+      target: targetNeeds,
+      spent: needsSpent,
+      remaining: targetNeeds - needsSpent,
+      percent: targetNeeds > 0 ? Math.round((needsSpent / targetNeeds) * 100) : 0,
+    },
+    wants: {
+      target: targetWants,
+      spent: wantsSpent,
+      remaining: targetWants - wantsSpent,
+      percent: targetWants > 0 ? Math.round((wantsSpent / targetWants) * 100) : 0,
+    },
+    savings: {
+      target: targetSavings,
+      allocated: savingsAllocated,
+      remaining: targetSavings - savingsAllocated,
+      percent: targetSavings > 0 ? Math.round((savingsAllocated / targetSavings) * 100) : 0,
+    },
+  };
+
+  // Compare Bulan ini vs Bulan Lalu per category
+  const prevCatMap = new Map(previousCategories.map((c) => [c.name, c.amount]));
+  const allCategoryNames = Array.from(
+    new Set([...categories.map((c) => c.name), ...previousCategories.map((c) => c.name)]),
+  );
+
+  const categoriesComparison = [];
+  for (const name of allCategoryNames) {
+    const cur = categories.find((c) => c.name === name);
+    const prevAmount = prevCatMap.get(name) || 0;
+    const curAmount = cur ? cur.amount : 0;
+    if (curAmount === 0 && prevAmount === 0) continue;
+
+    let pctChange = 0;
+    if (prevAmount === 0) {
+      pctChange = curAmount > 0 ? 100 : 0;
+    } else {
+      pctChange = Math.round(((curAmount - prevAmount) / prevAmount) * 100);
+    }
+
+    categoriesComparison.push({
+      name,
+      icon: cur?.icon || 'tag',
+      color: cur?.color || '#94a3b8',
+      currentAmount: curAmount,
+      previousAmount: prevAmount,
+      diff: curAmount - prevAmount,
+      percentChange: pctChange,
+    });
+  }
+  categoriesComparison.sort((a, b) => b.currentAmount - a.currentAmount);
+
+  // Mini Report Narrative
+  let miniReport = '';
+  const diffNet = summary.net - previous.net;
+  const netChangePct =
+    previous.net !== 0
+      ? Math.round(((summary.net - previous.net) / Math.abs(previous.net)) * 100)
+      : 0;
+
+  if (diffNet < 0) {
+    miniReport = `Hmm, sisa uangmu Rp ${Math.abs(summary.net).toLocaleString('id-ID')} lebih sedikit Rp ${Math.abs(diffNet).toLocaleString('id-ID')} dari bulan lalu, turun sekitar ${netChangePct}%. Ada pengeluaran tak terduga atau perlu evaluasi budget?`;
+  } else if (diffNet > 0) {
+    miniReport = `Bagus sekali! Sisa uangmu Rp ${summary.net.toLocaleString('id-ID')} meningkat Rp ${diffNet.toLocaleString('id-ID')} (+${netChangePct}%) dari bulan lalu. Pertahankan pola pengeluaran sehat ini!`;
+  } else {
+    miniReport = `Sisa uangmu bulan ini seimbang dengan bulan lalu sebesar Rp ${summary.net.toLocaleString('id-ID')}. Kondisi keuanganmu stabil!`;
+  }
+
   return {
     month,
     previousMonth,
+    selectedAccountId: accountId ? Number(accountId) : null,
     totalBalance: balance,
     accounts,
     summary,
-    previous: { income: previous.income, expense: previous.expense },
+    previous: {
+      income: previous.income,
+      expense: previous.expense,
+      net: previous.net,
+      count: previous.count,
+    },
     expenseChange: change(summary.expense, previous.expense),
     incomeChange: change(summary.income, previous.income),
+    netChange: change(summary.net, previous.net),
+    countChange: change(summary.count, previous.count),
     daily,
     categories,
+    categoriesComparison,
+    budget503020,
+    miniReport,
     budgets: {
       items: budgets,
       totalLimit,

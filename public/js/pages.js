@@ -1,5 +1,5 @@
 import { api } from './api.js';
-import { donutChart, flowChart, sparkline } from './charts.js';
+import { dailyExpenseLineChart, donutChart, donutChartWithLegend, flowChart, sparkline } from './charts.js';
 import {
   currentMonth,
   debounce,
@@ -175,222 +175,442 @@ function budgetRowHTML(budget) {
 
 export async function dashboardPage(ctx) {
   const month = ctx.query.month || currentMonth();
-  const data = await api.overview(month);
-  const { summary, budgets } = data;
+  const accountId = ctx.query.account ? Number(ctx.query.account) : null;
+  const data = await api.overview(month, accountId);
+  const { summary, budgets, categories = [], categoriesComparison = [], budget503020, daily = [] } = data;
 
-  let running = 0;
-  const cumulative = data.daily.map((day) => {
-    running += day.income - day.expense;
-    return running;
-  });
-  const hasFlow = summary.income > 0 || summary.expense > 0;
-  const hasHistory = summary.count > 0 || data.recent.length > 0;
+  const [currentYearStr, currentMonthNumStr] = month.split('-');
+  const currentYear = Number(currentYearStr);
+  const currentMonthNum = Number(currentMonthNumStr);
 
-  const top = data.categories.slice(0, 5);
-  const rest = data.categories.slice(5).reduce((acc, item) => acc + item.amount, 0);
-  const donutItems = [...top];
-  if (rest > 0) donutItems.push({ name: 'Lainnya', amount: rest, color: '#94a3b8' });
+  const monthNamesID = [
+    'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+  ];
 
-  const priorityBudgets = [...budgets.items].sort((a, b) => b.percent - a.percent).slice(0, 4);
+  function kpiDelta(change, invert = false) {
+    if (change === null || change === undefined) return '<span class="kpi-comparison neutral">0% VS Bulan Lalu</span>';
+    if (change === 0) return '<span class="kpi-comparison neutral">0% VS Bulan Lalu</span>';
+    const isPositive = change > 0;
+    const isGood = invert ? !isPositive : isPositive;
+    const arrow = isPositive ? '▲' : '▼';
+    const cls = isGood ? 'down' : 'up';
+    return `<span class="kpi-comparison ${cls}">${arrow} ${Math.abs(change)}% VS Bulan Lalu</span>`;
+  }
+
+  // Top spending categories list (up to 9 rows like in user's image)
+  const topCategories = categories.slice(0, 9);
+  const topCategoriesHTML = topCategories.length === 0
+    ? `<tr><td colspan="3" style="text-align:center; padding:16px; color:var(--muted)">Belum ada data pengeluaran</td></tr>`
+    : topCategories.map((cat, idx) => `
+        <tr>
+          <td class="col-num">${idx + 1}</td>
+          <td><strong>${esc(cat.name)}</strong></td>
+          <td class="col-amount">Rp ${fmtNumber(cat.amount)}</td>
+        </tr>
+      `).join('');
+
+  // Donut chart with legend
+  const { svg: donutSvg, legend: donutLegendHtml } = donutChartWithLegend(categories, summary.expense);
+
+  // Month-over-month comparison rows
+  const comparisonRowsHTML = categoriesComparison.length === 0
+    ? `<tr><td colspan="4" style="text-align:center; padding:16px; color:var(--muted)">Belum ada data perbandingan</td></tr>`
+    : categoriesComparison.slice(0, 9).map((cat) => {
+        let pctBadge = '';
+        if (cat.percentChange > 0) {
+          pctBadge = `<span class="pct-up">▲ ${cat.percentChange}%</span>`;
+        } else if (cat.percentChange < 0) {
+          pctBadge = `<span class="pct-down">▼ ${Math.abs(cat.percentChange)}%</span>`;
+        } else {
+          pctBadge = `<span class="pct-neutral">0%</span>`;
+        }
+        return `
+          <tr>
+            <td><strong>${esc(cat.name)}</strong></td>
+            <td class="col-amount">Rp ${fmtNumber(cat.currentAmount)}</td>
+            <td class="col-amount">Rp ${fmtNumber(cat.previousAmount)}</td>
+            <td class="col-pct">${pctBadge}</td>
+          </tr>
+        `;
+      }).join('');
+
+  // Bar comparison max
+  const barMax = Math.max(summary.income, summary.expense, 1);
+  const incomeBarPct = Math.round((summary.income / barMax) * 100);
+  const expenseBarPct = Math.round((summary.expense / barMax) * 100);
+
+  // 50/30/20 data
+  const b50 = budget503020 || {
+    needs: { target: 0, spent: 0, remaining: 0, percent: 0 },
+    wants: { target: 0, spent: 0, remaining: 0, percent: 0 },
+    savings: { target: 0, allocated: 0, remaining: 0, percent: 0 },
+  };
 
   ctx.view.innerHTML = `
-    <div class="page-head">
-      <div>
-        <p class="eyebrow">Ringkasan</p>
-        <h1 class="page-title">${greeting()}</h1>
-        <p class="page-sub">${formatDateLong(todayISO())}</p>
-      </div>
-      <div class="head-actions">
-        ${monthNavHTML(month)}
-        <button class="btn primary" data-add>${icon('plus')} Catat</button>
-      </div>
-    </div>
+    <div class="infodash-container">
 
-    <section class="hero">
-      <div class="hero-top">
-        <span class="hero-label">Total saldo · ${data.accounts.length} dompet</span>
-        <button class="hero-eye" data-privacy aria-label="Sembunyikan saldo">${icon('eye')}</button>
-      </div>
-      <div class="hero-amount">${fmtIDR(data.totalBalance)}</div>
-      <div class="hero-meta">
-        <span class="hero-badge ${summary.net >= 0 ? 'pos' : ''}">${summary.net >= 0 ? 'Surplus' : 'Defisit'} bulan ini</span>
-        <span>${fmtSigned(summary.net)}</span>
-      </div>
-      <div class="hero-metrics">
-        <div class="hero-metric"><span>Pemasukan</span><strong>${fmtIDR(summary.income)}</strong></div>
-        <div class="hero-metric"><span>Pengeluaran</span><strong>${fmtIDR(summary.expense)}</strong></div>
-      </div>
-      ${hasFlow ? sparkline(cumulative) : ''}
-    </section>
+      <!-- Top Navigation & Selectors -->
+      <section class="infodash-top-nav">
+        <div class="infodash-nav-row">
+          <div class="infodash-title-block">
+            <h1>Dashboard Informatif</h1>
+            <p>Grafik harian, rasio, dan progress budgeting tampil real-time</p>
+          </div>
 
-    <div class="stats-grid">
-      <div class="stat">
-        <span class="stat-icon in">${icon('arrow-down-left')}</span>
-        <div>
-          <div class="stat-label">Pemasukan ${monthLabelShort(month)}</div>
-          <div class="stat-value">${fmtIDR(summary.income)}</div>
-          <div class="stat-sub">${deltaHTML(data.incomeChange, true) || '<span>Bulan ini</span>'}</div>
-        </div>
-      </div>
-      <div class="stat">
-        <span class="stat-icon out">${icon('arrow-up-right')}</span>
-        <div>
-          <div class="stat-label">Pengeluaran ${monthLabelShort(month)}</div>
-          <div class="stat-value">${fmtIDR(summary.expense)}</div>
-          <div class="stat-sub">${deltaHTML(data.expenseChange, false) || '<span>Bulan ini</span>'}</div>
-        </div>
-      </div>
-    </div>
-
-    ${
-      hasHistory
-        ? ''
-        : `<section class="card card-pad mt-16">
-            <div class="row-between">
-              <div>
-                <h2 class="section-title">Mulai catat dalam 2 langkah</h2>
-                <p class="section-sub">Data keuanganmu akan otomatis rapi dan bisa dilihat dari mana saja.</p>
+          <div class="infodash-selectors">
+            <div class="month-badge-card">
+              <div class="month-badge-title">
+                ${icon('calendar')} <span>${monthLabel(month)}</span>
+              </div>
+              <div class="month-select-row">
+                <select id="select-month" aria-label="Pilih Bulan">
+                  ${monthNamesID.map((name, i) => `
+                    <option value="${String(i + 1).padStart(2, '0')}" ${i + 1 === currentMonthNum ? 'selected' : ''}>
+                      ${name}
+                    </option>
+                  `).join('')}
+                </select>
+                <select id="select-year" aria-label="Pilih Tahun">
+                  ${[2024, 2025, 2026, 2027, 2028].map((y) => `
+                    <option value="${y}" ${y === currentYear ? 'selected' : ''}>${y}</option>
+                  `).join('')}
+                </select>
               </div>
             </div>
-            <div class="steps">
-              <div class="step"><span class="step-num">1</span><span>Hubungkan bot Telegram di menu <strong>Pengaturan</strong>, lalu kirim <code>/start</code> ke bot kamu.</span></div>
-              <div class="step"><span class="step-num">2</span><span>Kirim pesan seperti <code>makan siang 25rb</code> — transaksi langsung tercatat.</span></div>
-              <div class="step"><span class="step-num">3</span><span>Atur anggaran bulanan supaya pengeluaran tetap terkendali.</span></div>
+
+            <button class="btn primary" data-add>
+              ${icon('plus')} Catat
+            </button>
+          </div>
+        </div>
+
+        <!-- Multi-Akun Filter Pills (Interaktif-Multi-User) -->
+        <div class="account-filter-bar">
+          <button class="account-pill ${!accountId ? 'active' : ''}" data-acc-id="">
+            ${icon('wallet')}
+            <span>Semua Akun (Gabungan)</span>
+          </button>
+          ${data.accounts.map((acc) => `
+            <button class="account-pill ${accountId === acc.id ? 'active' : ''}" data-acc-id="${acc.id}">
+              <span style="width:8px; height:8px; border-radius:50%; background:${acc.color}"></span>
+              <span>${esc(acc.name)}</span>
+            </button>
+          `).join('')}
+        </div>
+      </section>
+
+      <!-- 4 Top KPI Cards (Directly Matching User Image) -->
+      <section class="infodash-kpi-grid">
+        <div class="infodash-kpi-card kpi-income">
+          <div class="kpi-header-bar">
+            ${icon('arrow-down-left')}
+            <span>TOTAL PEMASUKAN</span>
+          </div>
+          <div class="kpi-content">
+            <div class="kpi-amount">Rp ${fmtNumber(summary.income)}</div>
+            ${kpiDelta(data.incomeChange)}
+          </div>
+        </div>
+
+        <div class="infodash-kpi-card kpi-expense">
+          <div class="kpi-header-bar">
+            ${icon('arrow-up-right')}
+            <span>TOTAL PENGELUARAN</span>
+          </div>
+          <div class="kpi-content">
+            <div class="kpi-amount">Rp ${fmtNumber(summary.expense)}</div>
+            ${kpiDelta(data.expenseChange, true)}
+          </div>
+        </div>
+
+        <div class="infodash-kpi-card kpi-balance">
+          <div class="kpi-header-bar">
+            ${icon('wallet')}
+            <span>SISA SALDO</span>
+          </div>
+          <div class="kpi-content">
+            <div class="kpi-amount">Rp ${fmtNumber(summary.net)}</div>
+            ${kpiDelta(data.netChange)}
+          </div>
+        </div>
+
+        <div class="infodash-kpi-card kpi-count">
+          <div class="kpi-header-bar">
+            ${icon('list')}
+            <span>TOTAL TRANSAKSI</span>
+          </div>
+          <div class="kpi-content">
+            <div class="kpi-amount">${summary.count}</div>
+            ${kpiDelta(data.countChange)}
+          </div>
+        </div>
+      </section>
+
+      <!-- Mid Row: Left Budget & Mini Report, Right Daily Line Chart -->
+      <section class="infodash-mid-grid">
+        <div class="budget-left-col">
+          <div class="budget-input-box">
+            <div class="budget-tag-row">
+              <span class="budget-tag-label">Masukkan budget</span>
+              <a href="#/anggaran" class="budget-tag-pill">
+                Rp ${fmtNumber(budgets.totalLimit || 6000000)}
+              </a>
             </div>
-          </section>`
-    }
 
-    <section class="card mt-16">
-      <div class="card-head">
-        <div>
-          <h2 class="section-title">Arus kas harian</h2>
-          <p class="section-sub">${monthLabel(month)}</p>
-        </div>
-        <div class="chart-legend">
-          <span><i class="legend-dot" style="background:var(--income)"></i>Masuk</span>
-          <span><i class="legend-dot" style="background:var(--expense)"></i>Keluar</span>
-        </div>
-      </div>
-      <div class="card-body chart-wrap">
-        ${
-          hasFlow
-            ? flowChart(data.daily)
-            : emptyState({
-                iconName: 'trending-up',
-                title: 'Belum ada arus kas',
-                description: 'Grafik muncul setelah ada pemasukan atau pengeluaran bulan ini.',
-              })
-        }
-      </div>
-    </section>
+            <div class="budget-bar-compare">
+              <div class="bar-compare-item">
+                <div class="bar-compare-label">
+                  <span>Pemasukan</span>
+                  <span>Rp ${fmtNumber(summary.income)}</span>
+                </div>
+                <div class="bar-compare-track">
+                  <div class="bar-compare-fill bar-fill-income" style="width: ${incomeBarPct}%"></div>
+                </div>
+              </div>
 
-    <div class="grid-2">
-      <section class="card">
-        <div class="card-head">
-          <div>
-            <h2 class="section-title">Pengeluaran</h2>
-            <p class="section-sub">Per kategori · ${monthLabelShort(month)}</p>
+              <div class="bar-compare-item">
+                <div class="bar-compare-label">
+                  <span>Pengeluaran</span>
+                  <span>Rp ${fmtNumber(summary.expense)}</span>
+                </div>
+                <div class="bar-compare-track">
+                  <div class="bar-compare-fill bar-fill-expense" style="width: ${expenseBarPct}%"></div>
+                </div>
+              </div>
+            </div>
           </div>
-          <a class="link-btn" href="#/transaksi?kind=expense">Detail ${icon('chevron-right')}</a>
+
+          <div class="mini-report-box">
+            <div class="mini-report-title">
+              <span>⚠️</span>
+              <span>MINI REPORTS</span>
+            </div>
+            <p class="mini-report-text">
+              ${esc(data.miniReport || 'Semua transaksi tercatat secara otomatis.')}
+            </p>
+          </div>
         </div>
-        <div class="card-body">
-          ${
-            summary.expense === 0
-              ? emptyState({
-                  iconName: 'shopping-bag',
-                  title: 'Belum ada pengeluaran',
-                  description: 'Pengeluaran bulan ini akan terbagi otomatis per kategori.',
-                })
-              : `<div class="donut-layout">
-                  <div class="donut-wrap">
-                    ${donutChart(donutItems, summary.expense)}
-                    <div class="donut-center">
-                      <span>Total keluar</span>
-                      <strong>${fmtCompact(summary.expense)}</strong>
+
+        <!-- Right Side: GRAFIK PENGELUARAN HARIAN -->
+        <div class="daily-chart-card">
+          <div class="daily-chart-header">
+            <span>GRAFIK PENGELUARAN HARIAN</span>
+          </div>
+          <div class="daily-chart-body">
+            ${dailyExpenseLineChart(daily)}
+          </div>
+        </div>
+      </section>
+
+      <!-- Budgeting 50/30/20 Section -->
+      <section class="budget-503020-card">
+        <div class="budget-503020-header">
+          <div>
+            <div class="budget-503020-title">
+              ${icon('target')}
+              <span>BUDGETING 50/30/20 · METODE PEMBAGIAN KEUANGAN POPULER</span>
+            </div>
+            <div class="budget-503020-sub">
+              Rekomendasi porsi: 50% Kebutuhan Pokok, 30% Keinginan, 20% Tabungan/Investasi dihitung dari pemasukan bulan ini.
+            </div>
+          </div>
+          <a class="link-btn" href="#/anggaran">Pengaturan Anggaran ${icon('chevron-right')}</a>
+        </div>
+
+        <div class="budget-503020-grid">
+          <div class="b50-item b50-needs">
+            <div class="b50-head">
+              <span class="b50-name">50% KEBUTUHAN (NEEDS)</span>
+              <span class="b50-pct-badge">${b50.needs.percent}%</span>
+            </div>
+            <div class="b50-stat-row">
+              <span>Target (50%):</span>
+              <strong>Rp ${fmtNumber(b50.needs.target)}</strong>
+            </div>
+            <div class="b50-stat-row">
+              <span>Terpakai:</span>
+              <strong>Rp ${fmtNumber(b50.needs.spent)}</strong>
+            </div>
+            <div class="b50-stat-row">
+              <span>Sisa Alokasi:</span>
+              <strong style="color:${b50.needs.remaining < 0 ? '#e11d48' : '#059669'}">
+                Rp ${fmtNumber(b50.needs.remaining)}
+              </strong>
+            </div>
+            <div class="b50-progress-bar">
+              <div class="b50-progress-fill" style="width: ${Math.min(b50.needs.percent, 100)}%; background: ${b50.needs.percent > 100 ? '#e11d48' : '#3b82f6'};"></div>
+            </div>
+            <div class="b50-tags">Makan & Minum, Tagihan, Transportasi, Kesehatan, Pendidikan, Belanja Pokok</div>
+          </div>
+
+          <div class="b50-item b50-wants">
+            <div class="b50-head">
+              <span class="b50-name">30% KEINGINAN (WANTS)</span>
+              <span class="b50-pct-badge">${b50.wants.percent}%</span>
+            </div>
+            <div class="b50-stat-row">
+              <span>Target (30%):</span>
+              <strong>Rp ${fmtNumber(b50.wants.target)}</strong>
+            </div>
+            <div class="b50-stat-row">
+              <span>Terpakai:</span>
+              <strong>Rp ${fmtNumber(b50.wants.spent)}</strong>
+            </div>
+            <div class="b50-stat-row">
+              <span>Sisa Alokasi:</span>
+              <strong style="color:${b50.wants.remaining < 0 ? '#e11d48' : '#059669'}">
+                Rp ${fmtNumber(b50.wants.remaining)}
+              </strong>
+            </div>
+            <div class="b50-progress-bar">
+              <div class="b50-progress-fill" style="width: ${Math.min(b50.wants.percent, 100)}%; background: ${b50.wants.percent > 100 ? '#e11d48' : '#ec4899'};"></div>
+            </div>
+            <div class="b50-tags">Hiburan, Belanja Gadget/Baju, Kafe/Jajan, Liburan, Hobi</div>
+          </div>
+
+          <div class="b50-item b50-savings">
+            <div class="b50-head">
+              <span class="b50-name">20% TABUNGAN & INVESTASI</span>
+              <span class="b50-pct-badge">${b50.savings.percent}%</span>
+            </div>
+            <div class="b50-stat-row">
+              <span>Target (20%):</span>
+              <strong>Rp ${fmtNumber(b50.savings.target)}</strong>
+            </div>
+            <div class="b50-stat-row">
+              <span>Terkumpul:</span>
+              <strong>Rp ${fmtNumber(b50.savings.allocated)}</strong>
+            </div>
+            <div class="b50-stat-row">
+              <span>Sisa Target:</span>
+              <strong style="color:${b50.savings.remaining > 0 ? '#d97706' : '#059669'}">
+                Rp ${fmtNumber(b50.savings.remaining)}
+              </strong>
+            </div>
+            <div class="b50-progress-bar">
+              <div class="b50-progress-fill" style="width: ${Math.min(b50.savings.percent, 100)}%; background: #10b981;"></div>
+            </div>
+            <div class="b50-tags">Investasi Saham/Reksadana, Tabungan Rutin, Dana Darurat</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Bottom Row: 3 Columns matching user's image -->
+      <section class="infodash-bottom-grid">
+        <!-- Col 1: PENGELUARAN TERTINGGI -->
+        <div class="info-table-card">
+          <div class="info-table-header">
+            <span>${categories.length} PENGELUARAN TERTINGGI</span>
+          </div>
+          <div class="info-table-body">
+            <table class="info-table">
+              <thead>
+                <tr>
+                  <th class="col-num">No</th>
+                  <th>Sub Kategori</th>
+                  <th class="col-amount">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${topCategoriesHTML}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Col 2: ALOKASI PENGELUARAN (Donut Chart) -->
+        <div class="info-table-card">
+          <div class="info-table-header">
+            <span>ALOKASI PENGELUARAN</span>
+          </div>
+          <div class="info-table-body">
+            ${
+              summary.expense === 0
+                ? `<div style="text-align:center; padding:24px; color:var(--muted)">Belum ada pengeluaran bulan ini</div>`
+                : `<div class="donut-two-col">
+                    ${donutSvg}
+                    <div class="donut-legend-col">
+                      ${donutLegendHtml}
                     </div>
-                  </div>
-                  <div class="donut-legend">
-                    ${donutItems
-                      .map(
-                        (item) => `<div class="donut-item">
-                          <i class="legend-dot" style="background:${item.color}"></i>
-                          <span class="name">${esc(item.name)}</span>
-                          <span class="value">${Math.round((item.amount / summary.expense) * 100)}%</span>
-                        </div>`,
-                      )
-                      .join('')}
-                  </div>
-                </div>`
-          }
+                  </div>`
+            }
+          </div>
+        </div>
+
+        <!-- Col 3: PENGELUARAN BULAN INI VS BULAN LALU -->
+        <div class="info-table-card">
+          <div class="info-table-header">
+            <span>PENGELUARAN BULAN INI VS BULAN LALU</span>
+          </div>
+          <div class="info-table-body">
+            <table class="info-table">
+              <thead>
+                <tr>
+                  <th>Sub Kategori</th>
+                  <th class="col-amount">Bulan Ini</th>
+                  <th class="col-amount">Bulan Lalu</th>
+                  <th class="col-pct">%</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${comparisonRowsHTML}
+              </tbody>
+            </table>
+          </div>
         </div>
       </section>
 
-      <section class="card">
+      <!-- Recent Transactions Section -->
+      <section class="card mt-16">
         <div class="card-head">
           <div>
-            <h2 class="section-title">Anggaran</h2>
-            <p class="section-sub">${budgets.items.length > 0 ? `${fmtIDR(budgets.totalSpent)} dari ${fmtIDR(budgets.totalLimit)}` : 'Belum diatur'}</p>
+            <h2 class="section-title">Aktivitas Terakhir</h2>
+            <p class="section-sub">Catatan transaksi terbaru ${accountId ? 'pada dompet ini' : 'dari semua dompet'}</p>
           </div>
-          <a class="link-btn" href="#/anggaran">Atur ${icon('chevron-right')}</a>
+          <a class="link-btn" href="#/transaksi">Semua Transaksi ${icon('chevron-right')}</a>
         </div>
         <div class="card-body">
           ${
-            priorityBudgets.length === 0
+            data.recent.length === 0
               ? emptyState({
-                  iconName: 'target',
-                  title: 'Belum ada anggaran',
-                  description: 'Tetapkan batas belanja per kategori agar lebih terkendali.',
-                  action: `<a class="btn soft small" href="#/anggaran">Buat anggaran</a>`,
+                  iconName: 'receipt',
+                  title: 'Belum ada aktivitas',
+                  description: 'Transaksi pertama kamu akan muncul di sini.',
+                  action: `<button class="btn soft small" data-add>${icon('plus')} Catat sekarang</button>`,
                 })
-              : `<div class="budget-list">${priorityBudgets.map(budgetRowHTML).join('')}</div>
-                 <div class="mt-16"><a class="link-btn" href="#/anggaran">Lihat semua anggaran ${icon('chevron-right')}</a></div>`
+              : `<div class="tx-list">${data.recent.map(txRowHTML).join('')}</div>`
           }
         </div>
       </section>
+
     </div>
+  `;
 
-    <section class="card mt-16">
-      <div class="card-head">
-        <div>
-          <h2 class="section-title">Aktivitas terakhir</h2>
-          <p class="section-sub">Transaksi terbaru dari semua dompet</p>
-        </div>
-        <a class="link-btn" href="#/transaksi">Lihat semua ${icon('chevron-right')}</a>
-      </div>
-      <div class="card-body">
-        ${
-          data.recent.length === 0
-            ? emptyState({
-                iconName: 'receipt',
-                title: 'Belum ada aktivitas',
-                description: 'Transaksi pertama kamu akan muncul di sini.',
-                action: `<button class="btn soft small" data-add>${icon('plus')} Catat sekarang</button>`,
-              })
-            : `<div class="tx-list">${data.recent.map(txRowHTML).join('')}</div>`
-        }
-      </div>
-    </section>`;
-
+  // Bind Events
   ctx.view.querySelectorAll('[data-add]').forEach((button) => {
     button.addEventListener('click', () => openTransactionModal(ctx, null, { onSaved: ctx.refresh }));
   });
-  bindMonthNav(ctx.view, (next) => ctx.navigate('/', { month: next }));
-  bindTxRows(ctx.view, data.recent, ctx, ctx.refresh);
 
-  const hero = ctx.view.querySelector('.hero');
-  const privacyButton = ctx.view.querySelector('[data-privacy]');
-  let hidden = localStorage.getItem('dpk_privacy') === '1';
-  const applyPrivacy = () => {
-    hero.classList.toggle('balance-hidden', hidden);
-    privacyButton.innerHTML = icon(hidden ? 'eye-off' : 'eye');
-    privacyButton.setAttribute('aria-label', hidden ? 'Tampilkan saldo' : 'Sembunyikan saldo');
+  // Month & Year Selectors
+  const selectMonth = ctx.view.querySelector('#select-month');
+  const selectYear = ctx.view.querySelector('#select-year');
+  const onDateChange = () => {
+    const nextMonth = `${selectYear.value}-${selectMonth.value}`;
+    ctx.navigate('/', { month: nextMonth, account: accountId || undefined });
   };
-  privacyButton.addEventListener('click', () => {
-    hidden = !hidden;
-    localStorage.setItem('dpk_privacy', hidden ? '1' : '0');
-    applyPrivacy();
+  selectMonth?.addEventListener('change', onDateChange);
+  selectYear?.addEventListener('change', onDateChange);
+
+  // Multi-Akun Filter Pills
+  ctx.view.querySelectorAll('[data-acc-id]').forEach((pill) => {
+    pill.addEventListener('click', () => {
+      const targetAccId = pill.dataset.accId;
+      ctx.navigate('/', { month, account: targetAccId || undefined });
+    });
   });
-  applyPrivacy();
+
+  bindTxRows(ctx.view, data.recent, ctx, ctx.refresh);
 }
 
 /* ------------------------------------------------------------------ */

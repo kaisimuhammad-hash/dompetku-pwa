@@ -134,7 +134,8 @@ export function createApiRouter({ getBot }) {
   router.get(
     '/overview',
     wrap(async (req, res) => {
-      res.json(await overview(monthQuery(req)));
+      const accountId = req.query.accountId ? Number(req.query.accountId) : null;
+      res.json(await overview(monthQuery(req), accountId));
     }),
   );
 

@@ -1,25 +1,35 @@
 import { Markup, Telegraf } from 'telegraf';
 import { config } from '../config.js';
 import { AppError } from '../lib/errors.js';
-import { ParseError, parseMessage } from '../lib/parse.js';
+import { ParseError, findAmount, parseMessage } from '../lib/parse.js';
 import {
   currentMonth,
   formatDateLong,
   formatIDR,
+  isValidDate,
   isValidMonth,
   monthLabel,
+  shiftDate,
   todayISO,
 } from '../lib/format.js';
 import { getAccount, listAccounts } from '../services/accounts.js';
 import { fallbackCategory, listCategories } from '../services/categories.js';
 import { budgetAlert, listBudgets } from '../services/budgets.js';
 import { categoryBreakdown, monthSummary } from '../services/reports.js';
-import { createTransaction, deleteTransaction } from '../services/transactions.js';
+import {
+  createTransaction,
+  deleteTransaction,
+  getTransaction,
+  listTransactions,
+  updateTransaction,
+} from '../services/transactions.js';
 import { getDefaultAccountId, getOwnerChatId, getStoredBotToken, setSetting } from '../services/settings.js';
 import { sendBackup } from '../services/backup.js';
 
 const pendingDrafts = new Map();
+const pendingEdits = new Map();
 const DRAFT_TTL = 30 * 60 * 1000;
+const EDIT_TTL = 15 * 60 * 1000;
 
 export const TELEGRAM_WEBHOOK_PATH = '/api/telegram/webhook';
 
@@ -57,6 +67,9 @@ function cleanupDrafts() {
   const now = Date.now();
   for (const [key, value] of pendingDrafts) {
     if (now - value.updatedAt > DRAFT_TTL) pendingDrafts.delete(key);
+  }
+  for (const [key, value] of pendingEdits) {
+    if (now - value.updatedAt > EDIT_TTL) pendingEdits.delete(key);
   }
 }
 
@@ -148,7 +161,8 @@ function helpText() {
     '/laporan 2026-10 — ringkasan bulan lain',
     '/anggaran — status anggaran',
     '/kategori — daftar kategori',
-    '/batal — batalkan draft',
+    '/transaksi — lihat dan edit riwayat transaksi',
+    '/batal — batalkan draft atau mode edit',
     '/backup — kirim backup data sekarang',
     '/help — bantuan ini',
     '',
@@ -161,12 +175,131 @@ function mainMenuKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback('Saldo dompet', 'menu:saldo'), Markup.button.callback('Laporan', 'menu:laporan')],
     [Markup.button.callback('Anggaran', 'menu:anggaran'), Markup.button.callback('Kategori', 'menu:kategori')],
+    [Markup.button.callback('📋 Riwayat & Edit Transaksi', 'menu:transaksi')],
     [Markup.button.callback('Bantuan', 'menu:help')],
   ]);
 }
 
 function subMenuKeyboard() {
   return Markup.inlineKeyboard([[Markup.button.callback('Kembali ke menu', 'menu:main')]]);
+}
+
+async function renderTransactionList(limit = 6) {
+  const transactions = await listTransactions({ limit });
+  if (transactions.length === 0) {
+    return {
+      text: '<b>Belum ada transaksi yang tercatat.</b>\n\nKirim pesan seperti <code>makan 25rb</code> atau <code>gaji 5jt</code> untuk mulai mencatat.',
+      keyboard: subMenuKeyboard(),
+    };
+  }
+
+  const lines = ['<b>📋 Riwayat Transaksi Terakhir</b>', 'Pilih transaksi yang ingin diedit atau dihapus:', ''];
+  const rows = [];
+
+  transactions.forEach((t) => {
+    const symbol = t.kind === 'income' ? '🟢' : t.kind === 'expense' ? '🔴' : '🔄';
+    const noteStr = t.note ? ` • <i>${esc(t.note)}</i>` : '';
+    const catStr = t.categoryName ? esc(t.categoryName) : 'Tanpa Kategori';
+    lines.push(
+      `${symbol} <b>#${t.id}</b> · ${formatIDR(t.amount)} (${kindLabel(t.kind)})`,
+      `   🏷 ${catStr} · 💳 ${esc(t.accountName)} · 📅 ${t.occurredOn}${noteStr}`,
+      '',
+    );
+
+    rows.push([
+      Markup.button.callback(`✏️ Edit #${t.id}`, `tx_edit:${t.id}`),
+      Markup.button.callback(`🗑 Hapus #${t.id}`, `tx_del:${t.id}`),
+    ]);
+  });
+
+  rows.push([Markup.button.callback('Kembali ke menu', 'menu:main')]);
+
+  return {
+    text: lines.join('\n'),
+    keyboard: Markup.inlineKeyboard(rows),
+  };
+}
+
+async function renderTransactionDetail(id, prefix = '') {
+  const tx = await getTransaction(id);
+  if (!tx) {
+    return {
+      text: 'Transaksi tidak ditemukan atau sudah dihapus.',
+      keyboard: Markup.inlineKeyboard([[Markup.button.callback('Kembali ke riwayat', 'menu:transaksi')]]),
+    };
+  }
+
+  const lines = [];
+  if (prefix) {
+    lines.push(prefix, '');
+  }
+  lines.push(`<b>Detail Transaksi #${tx.id}</b>`, '');
+  lines.push(`Jenis: <b>${kindLabel(tx.kind)}</b>`);
+  lines.push(`Nominal: <b>${formatIDR(tx.amount)}</b>`);
+  lines.push(`Dompet: <b>${esc(tx.accountName || '-')}</b>`);
+  if (tx.kind === 'transfer') {
+    lines.push(`Tujuan: <b>${esc(tx.toAccountName || '-')}</b>`);
+  } else {
+    lines.push(`Kategori: <b>${esc(tx.categoryName || 'Tanpa Kategori')}</b>`);
+  }
+  lines.push(`Catatan: <b>${esc(tx.note || '-')}</b>`);
+  lines.push(`Tanggal: <b>${formatDateLong(tx.occurredOn)}</b>`);
+  lines.push('', '<i>Pilih data yang ingin Anda ubah:</i>');
+
+  const rows = [
+    [Markup.button.callback('💰 Ubah Nominal', `tx_amt:${tx.id}`), Markup.button.callback('🏷 Ganti Kategori', `tx_cat:${tx.id}`)],
+    [Markup.button.callback('💳 Ganti Dompet', `tx_acc:${tx.id}`), Markup.button.callback('📝 Ubah Catatan', `tx_note:${tx.id}`)],
+    [Markup.button.callback('📅 Ubah Tanggal', `tx_date:${tx.id}`), Markup.button.callback('🔄 Tukar Jenis', `tx_toggle_kind:${tx.id}`)],
+    [Markup.button.callback('🗑 Hapus Transaksi', `tx_del:${tx.id}`)],
+    [Markup.button.callback('◀️ Kembali ke Riwayat', 'menu:transaksi')],
+  ];
+
+  return {
+    text: lines.join('\n'),
+    keyboard: Markup.inlineKeyboard(rows),
+  };
+}
+
+async function renderEditCategoryMenu(id) {
+  const tx = await getTransaction(id);
+  if (!tx) return { text: 'Transaksi tidak ditemukan.', keyboard: subMenuKeyboard() };
+  const categories = (await listCategories()).filter((c) => c.kind === tx.kind);
+  const rows = [];
+  for (let i = 0; i < categories.length; i += 2) {
+    rows.push(categories.slice(i, i + 2).map((c) => Markup.button.callback(c.name, `tx_set_cat:${tx.id}:${c.id}`)));
+  }
+  rows.push([Markup.button.callback('Batal / Kembali', `tx_edit:${tx.id}`)]);
+  return {
+    text: `<b>Pilih Kategori Baru untuk Transaksi #${tx.id} (${kindLabel(tx.kind)})</b>`,
+    keyboard: Markup.inlineKeyboard(rows),
+  };
+}
+
+async function renderEditAccountMenu(id) {
+  const tx = await getTransaction(id);
+  if (!tx) return { text: 'Transaksi tidak ditemukan.', keyboard: subMenuKeyboard() };
+  const accounts = await listAccounts();
+  const rows = [];
+  for (let i = 0; i < accounts.length; i += 2) {
+    rows.push(accounts.slice(i, i + 2).map((a) => Markup.button.callback(a.name, `tx_set_acc:${tx.id}:${a.id}`)));
+  }
+  rows.push([Markup.button.callback('Batal / Kembali', `tx_edit:${tx.id}`)]);
+  return {
+    text: `<b>Pilih Dompet Baru untuk Transaksi #${tx.id}</b>`,
+    keyboard: Markup.inlineKeyboard(rows),
+  };
+}
+
+function renderEditDateMenu(id) {
+  const yesterday = shiftDate(todayISO(), -1);
+  return {
+    text: `<b>Pilih Tanggal Baru untuk Transaksi #${id}</b>`,
+    keyboard: Markup.inlineKeyboard([
+      [Markup.button.callback('Hari Ini', `tx_set_date:${id}:${todayISO()}`), Markup.button.callback('Kemarin', `tx_set_date:${id}:${yesterday}`)],
+      [Markup.button.callback('Ketik Tanggal Manual', `tx_manual_date:${id}`)],
+      [Markup.button.callback('Batal / Kembali', `tx_edit:${id}`)],
+    ]),
+  };
 }
 
 function menuText() {
@@ -346,9 +479,20 @@ export function buildBot(token) {
 
   bot.command('kategori', (ctx) => ctx.replyWithHTML(kategoriText()));
 
+  bot.command('transaksi', async (ctx) => {
+    const list = await renderTransactionList(6);
+    await ctx.replyWithHTML(list.text, list.keyboard);
+  });
+
+  bot.command('riwayat', async (ctx) => {
+    const list = await renderTransactionList(6);
+    await ctx.replyWithHTML(list.text, list.keyboard);
+  });
+
   bot.command('batal', async (ctx) => {
     pendingDrafts.delete(String(ctx.chat.id));
-    await ctx.reply('Draft dibatalkan.');
+    pendingEdits.delete(String(ctx.chat.id));
+    await ctx.reply('Draft dan mode edit berhasil dibatalkan.');
   });
 
   bot.command('backup', async (ctx) => {
@@ -363,6 +507,73 @@ export function buildBot(token) {
   bot.on('text', async (ctx) => {
     const text = (ctx.message.text || '').trim();
     if (!text || text.startsWith('/')) return;
+    const chatId = String(ctx.chat?.id);
+
+    // Cek apakah user sedang dalam proses edit field transaksi
+    const edit = pendingEdits.get(chatId);
+    if (edit) {
+      if (edit.step === 'amount') {
+        const amounts = findAmount(text);
+        if (amounts.length > 0 && amounts[0] > 0) {
+          try {
+            await updateTransaction(edit.transactionId, { amount: amounts[0] });
+            pendingEdits.delete(chatId);
+            const detail = await renderTransactionDetail(
+              edit.transactionId,
+              `✅ <b>Nominal berhasil diubah menjadi ${formatIDR(amounts[0])}!</b>`,
+            );
+            await ctx.replyWithHTML(detail.text, detail.keyboard);
+            return;
+          } catch (err) {
+            await ctx.reply(`Gagal memperbarui nominal: ${err.message}`);
+            return;
+          }
+        } else {
+          await ctx.replyWithHTML(
+            'Nominal tidak valid. Silakan ketik angka seperti <code>50rb</code>, <code>75000</code>, atau kirim /batal.',
+          );
+          return;
+        }
+      }
+
+      if (edit.step === 'note') {
+        const newNote = text === '-' ? '' : text.slice(0, 100);
+        try {
+          await updateTransaction(edit.transactionId, { note: newNote });
+          pendingEdits.delete(chatId);
+          const detail = await renderTransactionDetail(edit.transactionId, '✅ <b>Catatan berhasil diperbarui!</b>');
+          await ctx.replyWithHTML(detail.text, detail.keyboard);
+          return;
+        } catch (err) {
+          await ctx.reply(`Gagal memperbarui catatan: ${err.message}`);
+          return;
+        }
+      }
+
+      if (edit.step === 'date') {
+        if (isValidDate(text)) {
+          try {
+            await updateTransaction(edit.transactionId, { occurredOn: text });
+            pendingEdits.delete(chatId);
+            const detail = await renderTransactionDetail(
+              edit.transactionId,
+              `✅ <b>Tanggal transaksi berhasil diubah menjadi ${formatDateLong(text)}!</b>`,
+            );
+            await ctx.replyWithHTML(detail.text, detail.keyboard);
+            return;
+          } catch (err) {
+            await ctx.reply(`Gagal memperbarui tanggal: ${err.message}`);
+            return;
+          }
+        } else {
+          await ctx.replyWithHTML(
+            'Format tanggal harus YYYY-MM-DD (contoh: <code>2026-11-19</code>) atau kirim /batal.',
+          );
+          return;
+        }
+      }
+    }
+
     if (text.toLowerCase() === 'menu') {
       await ctx.replyWithHTML(menuText(), mainMenuKeyboard());
       return;
@@ -414,6 +625,9 @@ export function buildBot(token) {
           });
         } else if (view === 'kategori') {
           await ctx.editMessageText(await kategoriText(), { parse_mode: 'HTML', ...subMenuKeyboard() });
+        } else if (view === 'transaksi') {
+          const list = await renderTransactionList(6);
+          await ctx.editMessageText(list.text, { parse_mode: 'HTML', ...list.keyboard });
         } else if (view === 'help') {
           await ctx.editMessageText(helpText(), { parse_mode: 'HTML', ...subMenuKeyboard() });
         } else {
@@ -423,6 +637,181 @@ export function buildBot(token) {
       } catch (err) {
         console.error('[bot] gagal membuka menu:', err.message);
         await answer('Menu gagal dibuka');
+      }
+      return;
+    }
+
+    // Callback Actions untuk Edit & Kelola Transaksi
+    if (data.startsWith('tx_edit:')) {
+      const id = Number(data.split(':')[1]);
+      try {
+        const detail = await renderTransactionDetail(id);
+        await ctx.editMessageText(detail.text, { parse_mode: 'HTML', ...detail.keyboard });
+        await answer();
+      } catch (err) {
+        console.error('[bot] gagal edit transaksi:', err.message);
+        await answer('Gagal memuat transaksi');
+      }
+      return;
+    }
+
+    if (data.startsWith('tx_del:')) {
+      const id = Number(data.split(':')[1]);
+      try {
+        await deleteTransaction(id);
+        await ctx.editMessageText(`<b>Transaksi #${id} berhasil dihapus.</b>`, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([[Markup.button.callback('◀️ Kembali ke Riwayat', 'menu:transaksi')]]),
+        });
+        await answer('Berhasil dihapus');
+      } catch (err) {
+        console.error('[bot] gagal hapus transaksi:', err.message);
+        await answer('Gagal menghapus transaksi');
+      }
+      return;
+    }
+
+    if (data.startsWith('tx_amt:')) {
+      const id = Number(data.split(':')[1]);
+      const tx = await getTransaction(id);
+      if (!tx) {
+        await answer('Transaksi tidak ditemukan');
+        return;
+      }
+      pendingEdits.set(chatId, { step: 'amount', transactionId: id, updatedAt: Date.now() });
+      await ctx.editMessageText(
+        `<b>Ubah Nominal Transaksi #${id}</b>\n\nNominal saat ini: <b>${formatIDR(tx.amount)}</b>\n\nSilakan ketik nominal baru di chat ini (contoh: <code>50rb</code>, <code>75000</code>, atau <code>1.5jt</code>).\nKetik /batal untuk membatalkan.`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([[Markup.button.callback('Batal / Kembali', `tx_edit:${id}`)]]),
+        },
+      );
+      await answer();
+      return;
+    }
+
+    if (data.startsWith('tx_note:')) {
+      const id = Number(data.split(':')[1]);
+      const tx = await getTransaction(id);
+      if (!tx) {
+        await answer('Transaksi tidak ditemukan');
+        return;
+      }
+      pendingEdits.set(chatId, { step: 'note', transactionId: id, updatedAt: Date.now() });
+      await ctx.editMessageText(
+        `<b>Ubah Catatan Transaksi #${id}</b>\n\nCatatan saat ini: <b>${esc(tx.note || '-')}</b>\n\nSilakan ketik catatan baru di chat ini (atau ketik <code>-</code> untuk menghapus catatan).\nKetik /batal untuk membatalkan.`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([[Markup.button.callback('Batal / Kembali', `tx_edit:${id}`)]]),
+        },
+      );
+      await answer();
+      return;
+    }
+
+    if (data.startsWith('tx_cat:')) {
+      const id = Number(data.split(':')[1]);
+      const menu = await renderEditCategoryMenu(id);
+      await ctx.editMessageText(menu.text, { parse_mode: 'HTML', ...menu.keyboard });
+      await answer();
+      return;
+    }
+
+    if (data.startsWith('tx_set_cat:')) {
+      const parts = data.split(':');
+      const id = Number(parts[1]);
+      const catId = Number(parts[2]);
+      try {
+        await updateTransaction(id, { categoryId: catId });
+        const detail = await renderTransactionDetail(id, '✅ <b>Kategori berhasil diubah!</b>');
+        await ctx.editMessageText(detail.text, { parse_mode: 'HTML', ...detail.keyboard });
+        await answer('Kategori diperbarui');
+      } catch (err) {
+        console.error('[bot] gagal ubah kategori:', err.message);
+        await answer('Gagal mengubah kategori');
+      }
+      return;
+    }
+
+    if (data.startsWith('tx_acc:')) {
+      const id = Number(data.split(':')[1]);
+      const menu = await renderEditAccountMenu(id);
+      await ctx.editMessageText(menu.text, { parse_mode: 'HTML', ...menu.keyboard });
+      await answer();
+      return;
+    }
+
+    if (data.startsWith('tx_set_acc:')) {
+      const parts = data.split(':');
+      const id = Number(parts[1]);
+      const accId = Number(parts[2]);
+      try {
+        await updateTransaction(id, { accountId: accId });
+        const detail = await renderTransactionDetail(id, '✅ <b>Dompet berhasil diubah!</b>');
+        await ctx.editMessageText(detail.text, { parse_mode: 'HTML', ...detail.keyboard });
+        await answer('Dompet diperbarui');
+      } catch (err) {
+        console.error('[bot] gagal ubah dompet:', err.message);
+        await answer('Gagal mengubah dompet');
+      }
+      return;
+    }
+
+    if (data.startsWith('tx_date:')) {
+      const id = Number(data.split(':')[1]);
+      const menu = renderEditDateMenu(id);
+      await ctx.editMessageText(menu.text, { parse_mode: 'HTML', ...menu.keyboard });
+      await answer();
+      return;
+    }
+
+    if (data.startsWith('tx_set_date:')) {
+      const parts = data.split(':');
+      const id = Number(parts[1]);
+      const dateVal = parts[2];
+      try {
+        await updateTransaction(id, { occurredOn: dateVal });
+        const detail = await renderTransactionDetail(id, `✅ <b>Tanggal diubah menjadi ${formatDateLong(dateVal)}!</b>`);
+        await ctx.editMessageText(detail.text, { parse_mode: 'HTML', ...detail.keyboard });
+        await answer('Tanggal diperbarui');
+      } catch (err) {
+        console.error('[bot] gagal ubah tanggal:', err.message);
+        await answer('Gagal mengubah tanggal');
+      }
+      return;
+    }
+
+    if (data.startsWith('tx_manual_date:')) {
+      const id = Number(data.split(':')[1]);
+      pendingEdits.set(chatId, { step: 'date', transactionId: id, updatedAt: Date.now() });
+      await ctx.editMessageText(
+        `<b>Ubah Tanggal Transaksi #${id}</b>\n\nKetik tanggal baru dengan format <code>YYYY-MM-DD</code> (contoh: <code>2026-11-19</code>).\nKetik /batal untuk membatalkan.`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([[Markup.button.callback('Batal / Kembali', `tx_edit:${id}`)]]),
+        },
+      );
+      await answer();
+      return;
+    }
+
+    if (data.startsWith('tx_toggle_kind:')) {
+      const id = Number(data.split(':')[1]);
+      try {
+        const tx = await getTransaction(id);
+        if (!tx || tx.kind === 'transfer') {
+          await answer('Tidak dapat mengubah jenis transaksi ini');
+          return;
+        }
+        const newKind = tx.kind === 'expense' ? 'income' : 'expense';
+        const fallback = await fallbackCategory(newKind);
+        await updateTransaction(id, { kind: newKind, categoryId: fallback ? fallback.id : null });
+        const detail = await renderTransactionDetail(id, `✅ <b>Jenis transaksi diubah menjadi ${kindLabel(newKind)}!</b>`);
+        await ctx.editMessageText(detail.text, { parse_mode: 'HTML', ...detail.keyboard });
+        await answer(`Diubah ke ${kindLabel(newKind)}`);
+      } catch (err) {
+        console.error('[bot] gagal toggle kind:', err.message);
+        await answer('Gagal mengubah jenis transaksi');
       }
       return;
     }
@@ -486,7 +875,13 @@ export function buildBot(token) {
 
         await ctx.editMessageText(lines.join('\n'), {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([[Markup.button.callback('Urungkan', `undo:${transaction.id}`)]]),
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('✏️ Edit Transaksi', `tx_edit:${transaction.id}`),
+              Markup.button.callback('Urungkan / Hapus', `undo:${transaction.id}`),
+            ],
+            [Markup.button.callback('📋 Riwayat Transaksi', 'menu:transaksi')],
+          ]),
         });
         await answer('Tersimpan');
       } catch (err) {
@@ -579,11 +974,12 @@ export function buildBot(token) {
 const BOT_COMMANDS = [
   { command: 'start', description: 'Tautkan chat dan buka menu' },
   { command: 'menu', description: 'Buka menu utama' },
+  { command: 'transaksi', description: 'Lihat dan edit transaksi' },
   { command: 'saldo', description: 'Lihat saldo semua dompet' },
   { command: 'laporan', description: 'Ringkasan bulan ini' },
   { command: 'anggaran', description: 'Status anggaran bulan ini' },
   { command: 'kategori', description: 'Daftar kategori' },
-  { command: 'batal', description: 'Batalkan draft' },
+  { command: 'batal', description: 'Batalkan draft atau mode edit' },
   { command: 'backup', description: 'Kirim backup data sekarang' },
   { command: 'help', description: 'Bantuan' },
 ];
